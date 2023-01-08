@@ -1,5 +1,5 @@
 # Hepatic-Immune-Cell-Patterns-Code
-**The script in this repository holds a sequential workflow of 6 steps.**
+**The script in this repository holds a sequential workflow of 6 steps**
 
 1. SingleR reference database annotations, marker assessment of annotated cell types, and initial visualization
 2. Use of reference database annotated cell type markers, marker gene-based principal component analysis (PCA), and quality control and filtering
@@ -10,7 +10,7 @@
 
 Each set of steps do not need to be performed in this exact order, but the first three steps are critical to understand and manipulate known cell types in subsequent steps
 
-**Required Software: R or Rstudio **
+**Required Software: R or Rstudio**
 
 Steps 1-4 use scran, scater, Seurat, scSorter, ggplot2, patchwork, dplyr, tidyr, ggrepel, SingleR, celldex, scuttle, pheatmap, and viridis libraries
 
