@@ -1,0 +1,2232 @@
+##Script made by Nick Koelsch 
+library(scran)
+library(scater)
+library(Seurat)
+library(scSorter)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(ggrepel)
+library(SingleR)
+library(celldex)
+library(scuttle)
+##load in all necessary packages and data
+
+###############################################################################################################################################################################
+##STEP1: Goal is to get markers (ref.data and empirical) to pass to PCA for optimization
+##Rationale ~ best markers out of ref.data and empirically found should give best resolution of cell types
+###############################################################################################################################################################################
+CDm1.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/CDm1/filtered_feature_bc_matrix.tar/filtered_feature_bc_matrix")
+CDm1 <- CreateSeuratObject(counts = CDm1.data, min.cells = 3, min.features = 200, project = "Ctrl")
+
+CDm2.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/CDm2/filtered_feature_bc_matrix (1).tar/filtered_feature_bc_matrix (1)")
+CDm2 <- CreateSeuratObject(counts = CDm2.data, min.cells = 3, min.features = 200, project = "Ctrl")
+
+WDm1.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/WDm1/filtered_feature_bc_matrix (2).tar/filtered_feature_bc_matrix (2)")
+WDm1 <- CreateSeuratObject(counts = WDm1.data, min.cells = 3, min.features = 200, project = "Pre-T")
+
+WDm2.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/WDm2/filtered_feature_bc_matrix (3).tar/filtered_feature_bc_matrix (3)")
+WDm2 <- CreateSeuratObject(counts = WDm2.data, min.cells = 3, min.features = 200, project = "Pre-T")
+
+WDTm1.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/WDTm1/filtered_feature_bc_matrix (4).tar/filtered_feature_bc_matrix (4)")
+WDTm1 <- CreateSeuratObject(counts = WDTm1.data, min.cells = 3, min.features = 200, project = "Post-T")
+
+WDTm2.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/WDTm2/filtered_feature_bc_matrix (5).tar/filtered_feature_bc_matrix (5)")
+WDTm2 <- CreateSeuratObject(counts = WDTm2.data, min.cells = 3, min.features = 200, project = "Post-T")
+
+##combine samples into one and merge into one whole sample that have their own identities
+CDm.combined <- merge(CDm1, y = c(CDm2), add.cell.ids = c("CD1", "CD2"))
+WDm.combined <- merge(WDm1, y = c(WDm2), add.cell.ids = c("WD1", "WD2"))
+WDTm.combined <- merge(WDTm1, y = c(WDTm2), add.cell.ids = c("WDT1", "WDT2"))
+
+CDm.WDm.WDTm.combo <- merge(CDm.combined, y = c(WDm.combined, WDTm.combined))
+unique(sapply(X = strsplit(colnames(CDm.WDm.WDTm.combo), split = "_"), FUN = "[", 1))
+
+table(CDm.WDm.WDTm.combo$orig.ident)
+head(CDm.WDm.WDTm.combo@meta.data, 5)
+tail(CDm.WDm.WDTm.combo@meta.data, 5)
+
+##find mt genes that may be overexpressed or indicative of cell death to filter out
+CDm.WDm.WDTm.combo[["percent.mt"]] <- PercentageFeatureSet(CDm.WDm.WDTm.combo, pattern = "^mt-")
+
+Idents(CDm.WDm.WDTm.combo) <- CDm.WDm.WDTm.combo@meta.data$orig.ident
+new.origident.order <- c("Ctrl", "Pre-T", "Post-T")
+CDm.WDm.WDTm.combo@meta.data$orig.ident <- factor(x = CDm.WDm.WDTm.combo@meta.data$orig.ident, levels = new.origident.order)
+
+VlnPlot(CDm.WDm.WDTm.combo, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), group.by = "orig.ident", ncol = 3)
+plot1 <- FeatureScatter(CDm.WDm.WDTm.combo, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(CDm.WDm.WDTm.combo, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+CDm.WDm.WDTm.combo <- subset(CDm.WDm.WDTm.combo, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 5)
+
+##normalization and QC of data done first and then run PCA and UMAP
+CDm.WDm.WDTm.combo <- NormalizeData(CDm.WDm.WDTm.combo, normalization.method = "LogNormalize", scale.factor = 10000, verbose = F)
+CDm.WDm.WDTm.combo <- FindVariableFeatures(CDm.WDm.WDTm.combo, selection.method = "vst", nfeatures = 3000, verbose = F)
+CDm.WDm.WDTm.combo <- ScaleData(CDm.WDm.WDTm.combo)
+CDm.WDm.WDTm.combo <- RunPCA(CDm.WDm.WDTm.combo, features = VariableFeatures(CDm.WDm.WDTm.combo))
+DimPlot(CDm.WDm.WDTm.combo, reduction = "pca", split.by = "orig.ident")
+
+ElbowPlot(CDm.WDm.WDTm.combo)
+
+CDm.WDm.WDTm.combo <- FindNeighbors(CDm.WDm.WDTm.combo, dims = 1:20, verbose = FALSE)
+CDm.WDm.WDTm.combo <- FindClusters(CDm.WDm.WDTm.combo, resolution = 0.4, dims = 1:20, verbose = FALSE)
+CDm.WDm.WDTm.combo <- RunUMAP(CDm.WDm.WDTm.combo, dims = 1:20)
+options(ggrepel.max.overlaps = Inf)
+DimPlot(CDm.WDm.WDTm.combo, reduction = "umap", pt.size = 0.6, group.by = "orig.ident", repel = TRUE) + labs(title = NULL)
+DimPlot(CDm.WDm.WDTm.combo, reduction = "umap", pt.size = 0.5, split.by = "orig.ident", label = TRUE, label.size = 4, repel = TRUE, ncol = 3) + NoLegend()
+
+Idents(CDm.WDm.WDTm.combo) <- CDm.WDm.WDTm.combo@meta.data$orig.ident
+table(CDm.WDm.WDTm.combo@meta.data$orig.ident)
+
+saveRDS(CDm.WDm.WDTm.combo, file = "CDm.WDm.WDTm.Anno.Markers.RDS")
+###################################################################
+##saveRDS to make backtracking to specific saved files quicker
+###################################################################
+CDm.WDm.WDTm.anno.marker <- readRDS("CDm.WDm.WDTm.Anno.Markers.RDS")
+
+##use SingleR to annotate all cells in samples
+ref.data.ImmGen <- celldex::ImmGenData()
+ref.data.ImmGen
+ref.data.MRD <- celldex::MouseRNAseqData()
+ref.data.MRD
+
+pred.combined <- SingleR(test = as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), ref = list(IG = ref.data.ImmGen, MRD = ref.data.MRD), labels = list(ref.data.ImmGen$label.main, ref.data.MRD$label.main))
+table(pred.combined$labels)
+
+CDm.WDm.WDTm.anno.marker$singleR.labels <- pred.combined$labels
+
+##all.markers is to get markers from ref.data and compare with empirical
+all.markers <- (c(pred.combined@listData$orig.results$IG@metadata$de.genes, pred.combined@listData$orig.results$MRD@metadata$de.genes))
+
+Adip.markers <- unique(unlist(all.markers$Adipocytes))
+Bcell.markers <- unique(unlist(all.markers$`B cells`))
+proBcell.markers <- unique(unlist(all.markers$`B cells, pro`))
+Baso.markers <- unique(unlist(all.markers$Basophils))
+DC.markers <- unique(unlist(all.markers$DC))
+Endo.markers <- unique(unlist(all.markers$`Endothelial cells`))
+Eosino.markers <- unique(unlist(all.markers$Eosinophils))
+Erythro.markers <- unique(unlist(all.markers$Erythrocytes))
+Fibro.markers <- unique(unlist(all.markers$Fibroblasts))
+Granulo.markers <- unique(unlist(all.markers$Granulocytes))
+Hep.markers <- unique(unlist(all.markers$Hepatocytes))
+ILC.markers <- unique(unlist(all.markers$ILC))
+MP.markers <- unique(unlist(all.markers$Macrophages))
+Microglia.markers <- unique(unlist(all.markers$Microglia))
+Mono.markers <- unique(unlist(all.markers$Monocytes))
+Neutro.markers <- unique(unlist(all.markers$Neutrophils))
+NK.markers <- unique(unlist(all.markers$`NK cells`))
+NKT.markers <- unique(unlist(all.markers$NKT))
+Stem.markers <- unique(unlist(all.markers$`Stem cells`))
+Stromal.markers <- unique(unlist(all.markers$`Stromal cells`))
+Tcell.markers <- unique(unlist(all.markers$`T cells`))
+TGD.markers <- unique(unlist(all.markers$Tgd))
+
+empirical.markers <- findMarkers(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker)$singleR.labels, direction = "up")
+
+m.Adip <- match(Adip.markers, rownames(empirical.markers$Adipocytes))
+m.Adip <- Adip.markers[rank(m.Adip) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Adip)
+
+m.B <- match(Bcell.markers, rownames(empirical.markers$`B cells`))
+m.B <- Bcell.markers[rank(m.B) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.B)
+
+m.pB <- match(proBcell.markers, rownames(empirical.markers$`B cells, pro`))
+m.pB <- proBcell.markers[rank(m.pB) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.pB)
+
+m.Baso <- match(Baso.markers, rownames(empirical.markers$Basophils))
+m.Baso <- Baso.markers[rank(m.Baso) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Baso)
+
+m.DC <- match(DC.markers, rownames(empirical.markers$DC))
+m.DC <- DC.markers[rank(m.DC) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.DC)
+
+m.Endo <- match(Endo.markers, rownames(empirical.markers$`Endothelial cells`))
+m.Endo <- Endo.markers[rank(m.Endo) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Endo)
+
+m.Eosino <- match(Eosino.markers, rownames(empirical.markers$Eosinophils))
+m.Eosino <- Eosino.markers[rank(m.Eosino) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Eosino)
+
+m.Erythro <- match(Erythro.markers, rownames(empirical.markers$Erythrocytes))
+m.Erythro <- Erythro.markers[rank(m.Erythro) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Erythro)
+
+m.Fibro <- match(Fibro.markers, rownames(empirical.markers$Fibroblasts))
+m.Fibro <- Fibro.markers[rank(m.Fibro) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Fibro)
+
+m.Granulo <- match(Granulo.markers, rownames(empirical.markers$Granulocytes))
+m.Granulo <- Granulo.markers[rank(m.Granulo) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Granulo)
+
+m.Hep <- match(Hep.markers, rownames(empirical.markers$Hepatocytes))
+m.Hep <- Hep.markers[rank(m.Hep) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Hep)
+
+m.ILC <- match(ILC.markers, rownames(empirical.markers$ILC))
+m.ILC <- ILC.markers[rank(m.ILC) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.ILC)
+
+m.MP <- match(MP.markers, rownames(empirical.markers$Macrophages))
+m.MP <- MP.markers[rank(m.MP) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.MP)
+
+m.Microglia <- match(Microglia.markers, rownames(empirical.markers$Microglia))
+m.Microglia <- Microglia.markers[rank(m.Microglia) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Microglia)
+
+m.Mono <- match(Mono.markers, rownames(empirical.markers$Monocytes))
+m.Mono <- Mono.markers[rank(m.Mono) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Mono)
+
+m.Neutro <- match(Neutro.markers, rownames(empirical.markers$Neutrophils))
+m.Neutro <- Neutro.markers[rank(m.Neutro) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Neutro)
+
+m.NK <- match(NK.markers, rownames(empirical.markers$`NK cells`))
+m.NK <- NK.markers[rank(m.NK) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.NK)
+
+m.NKT <- match(NKT.markers, rownames(empirical.markers$NKT))
+m.NKT <- NKT.markers[rank(m.NKT) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.NKT)
+
+m.Stem <- match(Stem.markers, rownames(empirical.markers$`Stem cells`))
+m.Stem <- Stem.markers[rank(m.Stem) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Stem)
+
+m.Stromal <- match(Stromal.markers, rownames(empirical.markers$`Stromal cells`))
+m.Stromal <- Stromal.markers[rank(m.Stromal) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.Stromal)
+
+m.T <- match(Tcell.markers, rownames(empirical.markers$`T cells`))
+m.T <- Tcell.markers[rank(m.T) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.T)
+
+m.TGD <- match(TGD.markers, rownames(empirical.markers$Tgd))
+m.TGD <- TGD.markers[rank(m.TGD) <= 20]
+plotHeatmap(as.SingleCellExperiment(CDm.WDm.WDTm.anno.marker), order_columns_by = "singleR.labels", features = m.TGD)
+
+##end of STEP1
+##REMEMBER TO CLEAR AND CLEANUP WORKSPACE WHEN POSSIBLE
+###############################################################################################################################################################################
+##record all found marker genes (ie top 20 from each annotated cell type heatmap) in a separate csv file
+##compiled genes into csv (after removing duplicates in excel) to pass to PCA for subsequent analysis
+##STEP2: Undergo all standard QC, filtering, etc.; but pass custom gene list from step 1 to PCA, re-annotate cells based on ref.data, and (hopefully) optimize visualizations
+###############################################################################################################################################################################
+CDm1.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/CDm1/filtered_feature_bc_matrix.tar/filtered_feature_bc_matrix")
+CDm1 <- CreateSeuratObject(counts = CDm1.data, min.cells = 3, min.features = 200, project = "Ctrl")
+
+CDm2.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/CDm2/filtered_feature_bc_matrix (1).tar/filtered_feature_bc_matrix (1)")
+CDm2 <- CreateSeuratObject(counts = CDm2.data, min.cells = 3, min.features = 200, project = "Ctrl")
+
+WDm1.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/WDm1/filtered_feature_bc_matrix (2).tar/filtered_feature_bc_matrix (2)")
+WDm1 <- CreateSeuratObject(counts = WDm1.data, min.cells = 3, min.features = 200, project = "Pre-T")
+
+WDm2.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/WDm2/filtered_feature_bc_matrix (3).tar/filtered_feature_bc_matrix (3)")
+WDm2 <- CreateSeuratObject(counts = WDm2.data, min.cells = 3, min.features = 200, project = "Pre-T")
+
+WDTm1.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/WDTm1/filtered_feature_bc_matrix (4).tar/filtered_feature_bc_matrix (4)")
+WDTm1 <- CreateSeuratObject(counts = WDTm1.data, min.cells = 3, min.features = 200, project = "Post-T")
+
+WDTm2.data <- Read10X(data.dir = "D:/Singulomics Data/RNAseq_Analysis/WDTm2/filtered_feature_bc_matrix (5).tar/filtered_feature_bc_matrix (5)")
+WDTm2 <- CreateSeuratObject(counts = WDTm2.data, min.cells = 3, min.features = 200, project = "Post-T")
+
+##combine samples into one and merge into one whole sample that have their own identities
+CDm.combined <- merge(CDm1, y = c(CDm2), add.cell.ids = c("CD1", "CD2"))
+WDm.combined <- merge(WDm1, y = c(WDm2), add.cell.ids = c("WD1", "WD2"))
+WDTm.combined <- merge(WDTm1, y = c(WDTm2), add.cell.ids = c("WDT1", "WDT2"))
+
+CDm.WDm.WDTm.combo <- merge(CDm.combined, y = c(WDm.combined, WDTm.combined))
+unique(sapply(X = strsplit(colnames(CDm.WDm.WDTm.combo), split = "_"), FUN = "[", 1))
+
+table(CDm.WDm.WDTm.combo$orig.ident)
+head(CDm.WDm.WDTm.combo@meta.data, 5)
+tail(CDm.WDm.WDTm.combo@meta.data, 5)
+
+##find mt genes that may be overexpressed or indicative of cell death to filter out
+CDm.WDm.WDTm.combo[["percent.mt"]] <- PercentageFeatureSet(CDm.WDm.WDTm.combo, pattern = "^mt-")
+
+VlnPlot(CDm.WDm.WDTm.combo, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+plot1 <- FeatureScatter(CDm.WDm.WDTm.combo, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(CDm.WDm.WDTm.combo, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+CDm.WDm.WDTm.combo <- subset(CDm.WDm.WDTm.combo, subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 5)
+
+##read in csv of custom genes to pass to PCA
+PCA.genes <- read.csv("D:/Singulomics Data/RNAseq_Analysis/Excel Files/IC Patterns/Genes for PCA.csv", header = TRUE, sep = ",")
+
+##normalization and QC of data done first, now run PCA with custom genes 
+CDm.WDm.WDTm.combo <- NormalizeData(CDm.WDm.WDTm.combo, normalization.method = "LogNormalize", scale.factor = 10000, verbose = F)
+CDm.WDm.WDTm.combo <- FindVariableFeatures(CDm.WDm.WDTm.combo, selection.method = "vst", nfeatures = 3000, verbose = F)
+CDm.WDm.WDTm.combo <- ScaleData(CDm.WDm.WDTm.combo)
+CDm.WDm.WDTm.combo <- RunPCA(CDm.WDm.WDTm.combo, features = rownames(PCA.genes$Genes))
+DimPlot(CDm.WDm.WDTm.combo, reduction = "pca")
+DimPlot(CDm.WDm.WDTm.combo, reduction = "pca", split.by = "orig.ident")
+
+ElbowPlot(CDm.WDm.WDTm.combo)
+print(CDm.WDm.WDTm.combo[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(CDm.WDm.WDTm.combo, dims = 1:2, reduction = "pca")
+DimHeatmap(CDm.WDm.WDTm.combo, cells = 500, dims = 1, reduction = "pca", balanced = TRUE)
+
+##(link = https://github.com/satijalab/seurat/issues/5961)##
+TopFeatures(CDm.WDm.WDTm.combo[["pca"]], dim = 1, nfeatures = 30, balanced = TRUE)
+feature_list <- list()
+for (i in 1:length(CDm.WDm.WDTm.combo@reductions$pca)) {
+  feature_list[[i]] <- TopFeatures(CDm.WDm.WDTm.combo[["pca"]], dim = i, nfeatures = 30, balanced = T)
+}
+
+write.csv(feature_list, file = "D:/Singulomics Data/RNAseq_Analysis/Excel Files/custom.genes.PCs.csv")
+############################################################
+
+CDm.WDm.WDTm.combo <- FindNeighbors(CDm.WDm.WDTm.combo, dims = 1:20, verbose = FALSE)
+CDm.WDm.WDTm.combo <- FindClusters(CDm.WDm.WDTm.combo, resolution = 0.4, dims = 1:20, verbose = FALSE)
+CDm.WDm.WDTm.combo <- RunUMAP(CDm.WDm.WDTm.combo, dims = 1:20, reduction = "pca")
+options(ggrepel.max.overlaps = Inf)
+DimPlot(CDm.WDm.WDTm.combo, reduction = "umap", pt.size = 0.8, label = TRUE, label.size = 4, repel = TRUE)
+DimPlot(CDm.WDm.WDTm.combo, reduction = "umap", pt.size = 0.6, split.by = "orig.ident", label = TRUE, label.size = 3, repel = TRUE, ncol = 3)
+
+new.colors <- DiscretePalette(n = 25, "polychrome")
+DimPlot(CDm.WDm.WDTm.combo, cols = new.colors, reduction = "umap", pt.size = 0.9, group.by = "seurat_clusters", label = TRUE, label.size = 4, repel = TRUE) + labs(title = NULL)
+DimPlot(CDm.WDm.WDTm.combo, cols = new.colors, reduction = "umap", pt.size = 0.9, group.by = "seurat_clusters", split.by = "orig.ident", label = TRUE, label.size = 3, repel = TRUE, ncol = 3) + labs(title = NULL)
+
+Idents(CDm.WDm.WDTm.combo) <- CDm.WDm.WDTm.combo@meta.data$orig.ident
+table(CDm.WDm.WDTm.combo@meta.data$orig.ident)
+
+saveRDS(CDm.WDm.WDTm.combo, file = "CDm.WDm.WDTm.combo.annotate.me.with.ref.databases.RDS")
+##save RDS and reload data to annotate based on reference databases quicker
+##too much data in R will slow down, so this can help!
+CDm.WDm.WDTm.combo <- readRDS("CDm.WDm.WDTm.combo.annotate.me.with.ref.databases.RDS")
+
+ref.data.ImmGen <- celldex::ImmGenData()
+ref.data.ImmGen
+ref.data.MRD <- celldex::MouseRNAseqData()
+ref.data.MRD
+
+pred.combined <- SingleR(test = as.SingleCellExperiment(CDm.WDm.WDTm.combo), ref = list(IG = ref.data.ImmGen, MRD = ref.data.MRD), labels = list(ref.data.ImmGen$label.main, ref.data.MRD$label.main))
+table(pred.combined$labels)
+
+CDm.WDm.WDTm.combo$singleR.labels <- pred.combined$labels
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##quick heatmap to compare reference annotated cell types from both datasets
+##NOTE: only compares those with same nomenclature!
+matched <- matchReferences(ref1 = ref.data.ImmGen, ref2 = ref.data.MRD, labels1 = ref.data.ImmGen$label.main, labels2 = ref.data.MRD$label.main)
+
+library(pheatmap)
+library(viridis)
+pheatmap::pheatmap(matched, color = viridis::plasma(100))
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+new.colors <- DiscretePalette(n = 25, "polychrome")
+
+Idents(CDm.WDm.WDTm.combo) <- CDm.WDm.WDTm.combo@meta.data$orig.ident
+new.origident.levels <- c("Ctrl", "Pre-T", "Post-T")
+CDm.WDm.WDTm.combo@meta.data$orig.ident <- factor(x = CDm.WDm.WDTm.combo@meta.data$orig.ident, levels = new.origident.levels)
+
+DimPlot(CDm.WDm.WDTm.combo, cols = new.colors, reduction = "umap", pt.size = 0.9, group.by = "singleR.labels", label = TRUE, label.size = 4, repel = TRUE) + labs(title = NULL)
+DimPlot(CDm.WDm.WDTm.combo, cols = new.colors, reduction = "umap", pt.size = 0.9, group.by = "singleR.labels", split.by = "orig.ident", label = TRUE, label.size = 3, repel = TRUE, ncol = 3) + labs(title = NULL)
+options(ggrepel.max.overlaps = Inf)
+
+DimPlot(CDm.WDm.WDTm.combo, reduction = "pca")
+DimPlot(CDm.WDm.WDTm.combo, reduction = "pca", split.by = "orig.ident")
+DimPlot(CDm.WDm.WDTm.combo, cols = new.colors, reduction = "pca", pt.size = 0.9, group.by = "singleR.labels", label.size = 3, repel = TRUE) + labs(title = NULL) + NoLegend()
+DimPlot(CDm.WDm.WDTm.combo, cols = new.colors, reduction = "pca", dims = c(3,4), pt.size = 0.9, group.by = "singleR.labels", split.by = "orig.ident", label.size = 2, repel = TRUE) + labs(title = NULL)
+
+VizDimLoadings(CDm.WDm.WDTm.combo, dims = 1:2, reduction = "pca", balanced = TRUE)
+VizDimLoadings(CDm.WDm.WDTm.combo, dims = 3:4, reduction = "pca", balanced = TRUE)
+
+VizDimLoadings(CDm.WDm.WDTm.combo, dims = 1, nfeatures = 30, reduction = "pca", balanced = TRUE)
+VizDimLoadings(CDm.WDm.WDTm.combo, dims = 2, nfeatures = 30, reduction = "pca", balanced = TRUE)
+VizDimLoadings(CDm.WDm.WDTm.combo, dims = 3, nfeatures = 30, reduction = "pca", balanced = TRUE)
+VizDimLoadings(CDm.WDm.WDTm.combo, dims = 4, nfeatures = 30, reduction = "pca", balanced = TRUE)
+
+##can check for cell types expressing specific genes of interest if desired
+FeaturePlot(CDm.WDm.WDTm.combo, features = c("Cd3e", "Cd247"), blend = TRUE)
+FeaturePlot(CDm.WDm.WDTm.combo, features = c("Cd79a", "Cd19"), blend = TRUE)
+
+FeaturePlot(CDm.WDm.WDTm.combo, features = c("Cd3e", "Cd247"), split.by = "orig.ident", blend = TRUE)
+FeaturePlot(CDm.WDm.WDTm.combo, features = c("Cd79a", "Cd19"), split.by = "orig.ident", blend = TRUE)
+
+head(Loadings(CDm.WDm.WDTm.combo, reduction = "pca")[1:5])
+Loadings(CDm.WDm.WDTm.combo[['pca']])
+CDm.WDm.WDTm.combo@reductions$pca@feature.loadings[,1]
+
+print(x = CDm.WDm.WDTm.combo[["pca"]], dims = 1:5, nfeatures = 15)
+
+write.csv(Loadings(CDm.WDm.WDTm.combo[["pca"]]), file = "D:/Singulomics Data/RNAseq_Analysis/Excel Files/PCs.Main.Genes.csv")
+##assess any necessary PC items for reference, as UMAP and tSNE do not allow proper visualization (data points may be warped and you can see these anomalies in PCA)
+##saveRDS for subsequent steps and retaining singleR.labels
+saveRDS(CDm.WDm.WDTm.combo, file = "CDm.WDm.WDTm.combo.annotate.me.with.ref.databases.RDS")
+
+##End of STEP2
+##REMEMBER TO CLEAR AND CLEANUP WORKSPACE WHEN POSSIBLE
+#############################################################################################################################################################################
+##STEP3: add custom metadata labels to rename ref.data annotated cells to names that are not as intrusive/confusing in labeling annotated cell clusters on UMAP
+##although, these specific labels were added, different sets of custom labels were added later instead of these, but this is a good point of reference to rename cell types 
+#############################################################################################################################################################################
+CDm.WDm.WDTm.SingleR.anno <- readRDS("CDm.WDm.WDTm.combo.annotate.me.with.ref.databases.RDS")
+
+Idents(CDm.WDm.WDTm.SingleR.anno) <- CDm.WDm.WDTm.SingleR.anno@meta.data$singleR.labels
+
+Adipocyte <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Adipocytes")
+table(Adipocyte@meta.data$orig.ident)
+Bcell <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "B cells")
+table(Bcell@meta.data$orig.ident)
+pro.Bcell <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "B cells, pro")
+table(pro.Bcell@meta.data$orig.ident)
+Basophil <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Basophils")
+table(Basophil@meta.data$orig.ident)
+DC <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "DC")
+table(DC@meta.data$orig.ident)
+Endothelial <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Endothelial cells")
+table(Endothelial@meta.data$orig.ident)
+Eosinophil <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Eosinophils")
+table(Eosinophil@meta.data$orig.ident)
+RBC <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Erythrocytes")
+table(RBC@meta.data$orig.ident)
+Fibroblast <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Fibroblasts")
+table(Fibroblast@meta.data$orig.ident)
+Granulocyte <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Granulocytes")
+table(Granulocyte@meta.data$orig.ident)
+Hepatocytes <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Hepatocytes")
+table(Hepatocytes@meta.data$orig.ident)
+ILC <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "ILC")
+table(ILC@meta.data$orig.ident)
+MP <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Macrophages")
+table(MP@meta.data$orig.ident)
+Microglia <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Microglia")
+table(Microglia@meta.data$orig.ident)
+Monocyte <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Monocytes")
+table(Monocyte@meta.data$orig.ident)
+Neutrophil <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Neutrophils")
+table(Neutrophil@meta.data$orig.ident)
+NK <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "NK cells")
+table(NK@meta.data$orig.ident)
+NKT <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "NKT")
+table(NKT@meta.data$orig.ident)
+Stem.cell <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Stem cells")
+table(Stem.cell@meta.data$orig.ident)
+Stromal.cell <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Stromal cells")
+table(Stromal.cell@meta.data$orig.ident)
+Tcell <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "T cells")
+table(Tcell@meta.data$orig.ident)
+TGD <- subset(CDm.WDm.WDTm.SingleR.anno, ident = "Tgd")
+table(TGD@meta.data$orig.ident)
+
+##notice how splitting these into their own makes them have their own level 
+##before, Hepatocytes were lvl 1, fibroblast 2, and Tcells 5
+levels(Hepatocytes)
+
+levels(Fibroblast)
+
+levels(Tcell)
+
+new.Adipo.label <- "Adipocytes, 1"
+new.Bcell.label <- "B cells, 2"
+new.Baso.label <- "Basophils, 3"
+new.DC.label <- "DC, 4"
+new.endo.label <- "Endothelial cells, 5"
+new.Eosino.label <- "Eosinophils, 6"
+new.RBC.label <- "Erythrocytes, 7"
+new.fibro.label <- "Fibroblasts, 8"
+new.Granulo.label <- "Granulocytes, 9"
+new.hep.label <- "Hepatocytes, 10"
+new.ILC.label <- "ILC, 11"
+new.MP.label <- "Macrophage, 12"
+new.microglia.label <- "Microglia, 13"
+new.mono.label <- "Monocytes, 14"
+new.Neutro.label <- "Neutrophils, 15"
+new.NK.label <- "NK cells, 16"
+new.NKT.label <- "NKT, 17"
+new.proB.label <- "pro-B cells, 18"
+new.stem.label <- "Stem cells, 19"
+new.stromal.label <- "Stromal cells, 20"
+new.Tcell.label <- "T cells, 21"
+new.Tgd.label <- "Tgd, 22"
+
+Hepatocytes.new <- AddMetaData(Hepatocytes, metadata = new.hep.label, col.name = 'Custom_anno_label')
+Fibroblasts.new <- AddMetaData(Fibroblast, metadata = new.fibro.label, col.name = 'Custom_anno_label')
+Bcell.new <- AddMetaData(Bcell, metadata = new.Bcell.label, col.name = 'Custom_anno_label')
+Macrophage.new <- AddMetaData(MP, metadata = new.MP.label, col.name = 'Custom_anno_label')
+Tcell.new <- AddMetaData(Tcell, metadata = new.Tcell.label, col.name = 'Custom_anno_label')
+NKT.new <- AddMetaData(NKT, metadata = new.NKT.label, col.name = 'Custom_anno_label')
+Microglia.new <- AddMetaData(Microglia, metadata = new.microglia.label, col.name = 'Custom_anno_label')
+NK.new <- AddMetaData(NK, metadata = new.NK.label, col.name = 'Custom_anno_label')
+DC.new <- AddMetaData(DC, metadata = new.DC.label, col.name = 'Custom_anno_label')
+Monocyte.new <- AddMetaData(Monocyte, metadata = new.mono.label, col.name = 'Custom_anno_label')
+Endothelial.new <- AddMetaData(Endothelial, metadata = new.endo.label, col.name = 'Custom_anno_label')
+Stromal.new <- AddMetaData(Stromal.cell, metadata = new.stromal.label, col.name = 'Custom_anno_label')
+pro.Bcell.new <- AddMetaData(pro.Bcell, metadata = new.proB.label, col.name = 'Custom_anno_label')
+Basophil.new <- AddMetaData(Basophil, metadata = new.Baso.label, col.name = 'Custom_anno_label')
+ILC.new <- AddMetaData(ILC, metadata = new.ILC.label, col.name = 'Custom_anno_label')
+TGD.new <- AddMetaData(TGD, metadata = new.Tgd.label, col.name = 'Custom_anno_label')
+Neutrophil.new <- AddMetaData(Neutrophil, metadata = new.Neutro.label, col.name = 'Custom_anno_label')
+Granulocyte.new <- AddMetaData(Granulocyte, metadata = new.Granulo.label, col.name = 'Custom_anno_label')
+Stem.new <- AddMetaData(Stem.cell, metadata = new.stem.label, col.name = 'Custom_anno_label')
+Eosinophil.new <- AddMetaData(Eosinophil, metadata = new.Eosino.label, col.name = 'Custom_anno_label')
+RBC.new <- AddMetaData(RBC, metadata = new.RBC.label, col.name = 'Custom_anno_label')
+Adipocyte.new <- AddMetaData(Adipocyte, metadata = new.Adipo.label, col.name = 'Custom_anno_label')
+
+head(Hepatocytes.new[[]])
+head(Fibroblasts.new[[]])
+head(Bcell.new[[]])
+head(Tcell.new[[]])
+head(NKT.new[[]])
+tail(Hepatocytes.new[[]])
+tail(Fibroblasts.new[[]])
+tail(Bcell.new[[]])
+tail(Tcell.new[[]])
+tail(NKT.new[[]])
+
+merge.custom.anno.label <- merge(Hepatocytes.new, y = c(Fibroblasts.new, Bcell.new, Macrophage.new, Tcell.new, NKT.new, Microglia.new, NK.new, DC.new, Monocyte.new, Endothelial.new, Stromal.new, pro.Bcell.new, Basophil.new, ILC.new, TGD.new, Neutrophil.new, Granulocyte.new, Stem.new, Eosinophil.new, RBC.new, Adipocyte.new))
+
+levels(merge.custom.anno.label)
+
+table(merge.custom.anno.label@meta.data$Custom_anno_label)
+
+head(merge.custom.anno.label)
+tail(merge.custom.anno.label)
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##now perform the same thing on all of the singleR.labels group, but just give them the number associated with cell type for less crowded UMAP visualization
+
+Idents(merge.custom.anno.label) <- merge.custom.anno.label@meta.data$singleR.labels
+
+Adipocyte.1 <- subset(merge.custom.anno.label, ident = "Adipocytes")
+table(Adipocyte.1@meta.data$orig.ident)
+Bcell.2 <- subset(merge.custom.anno.label, ident = "B cells")
+table(Bcell.2@meta.data$orig.ident)
+Basophil.3 <- subset(merge.custom.anno.label, ident = "Basophils")
+table(Basophil.3@meta.data$orig.ident)
+DC.4 <- subset(merge.custom.anno.label, ident = "DC")
+table(DC.4@meta.data$orig.ident)
+Endothelial.5 <- subset(merge.custom.anno.label, ident = "Endothelial cells")
+table(Endothelial.5@meta.data$orig.ident)
+Eosinophil.6 <- subset(merge.custom.anno.label, ident = "Eosinophils")
+table(Eosinophil.6@meta.data$orig.ident)
+RBC.7 <- subset(merge.custom.anno.label, ident = "Erythrocytes")
+table(RBC.7@meta.data$orig.ident)
+Fibroblast.8 <- subset(merge.custom.anno.label, ident = "Fibroblasts")
+table(Fibroblast.8@meta.data$orig.ident)
+Granulocyte.9 <- subset(merge.custom.anno.label, ident = "Granulocytes")
+table(Granulocyte.9@meta.data$orig.ident)
+Hepatocytes.10 <- subset(merge.custom.anno.label, ident = "Hepatocytes")
+table(Hepatocytes.10@meta.data$orig.ident)
+ILC.11 <- subset(merge.custom.anno.label, ident = "ILC")
+table(ILC.11@meta.data$orig.ident)
+MP.12 <- subset(merge.custom.anno.label, ident = "Macrophages")
+table(MP.12@meta.data$orig.ident)
+Microglia.13 <- subset(merge.custom.anno.label, ident = "Microglia")
+table(Microglia.13@meta.data$orig.ident)
+Monocyte.14 <- subset(merge.custom.anno.label, ident = "Monocytes")
+table(Monocyte.14@meta.data$orig.ident)
+Neutrophil.15 <- subset(merge.custom.anno.label, ident = "Neutrophils")
+table(Neutrophil.15@meta.data$orig.ident)
+NK.16 <- subset(merge.custom.anno.label, ident = "NK cells")
+table(NK.16@meta.data$orig.ident)
+NKT.17 <- subset(merge.custom.anno.label, ident = "NKT")
+table(NKT.17@meta.data$orig.ident)
+pro.Bcell.18 <- subset(merge.custom.anno.label, ident = "B cells, pro")
+table(pro.Bcell.18@meta.data$orig.ident)
+Stem.cell.19 <- subset(merge.custom.anno.label, ident = "Stem cells")
+table(Stem.cell.19@meta.data$orig.ident)
+Stromal.cell.20 <- subset(merge.custom.anno.label, ident = "Stromal cells")
+table(Stromal.cell.20@meta.data$orig.ident)
+Tcell.21 <- subset(merge.custom.anno.label, ident = "T cells")
+table(Tcell.21@meta.data$orig.ident)
+TGD.22 <- subset(merge.custom.anno.label, ident = "Tgd")
+table(TGD.22@meta.data$orig.ident)
+
+num.Adipo.label <- "1"
+num.Bcell.label <- "2"
+num.Baso.label <- "3"
+num.DC.label <- "4"
+num.endo.label <- "5"
+num.Eosino.label <- "6"
+num.RBC.label <- "7"
+num.fibro.label <- "8"
+num.Granulo.label <- "9"
+num.hep.label <- "10"
+num.ILC.label <- "11"
+num.MP.label <- "12"
+num.microglia.label <- "13"
+num.mono.label <- "14"
+num.Neutro.label <- "15"
+num.NK.label <- "16"
+num.NKT.label <- "17"
+num.proB.label <- "18"
+num.stem.label <- "19"
+num.stromal.label <- "20"
+num.Tcell.label <- "21"
+num.Tgd.label <- "22"
+
+Hepatocytes.num <- AddMetaData(Hepatocytes.10, metadata = num.hep.label, col.name = 'Custom_num_label')
+Fibroblasts.num <- AddMetaData(Fibroblast.8, metadata = num.fibro.label, col.name = 'Custom_num_label')
+Bcell.num <- AddMetaData(Bcell.2, metadata = num.Bcell.label, col.name = 'Custom_num_label')
+Macrophage.num <- AddMetaData(MP.12, metadata = num.MP.label, col.name = 'Custom_num_label')
+Tcell.num <- AddMetaData(Tcell.21, metadata = num.Tcell.label, col.name = 'Custom_num_label')
+NKT.num <- AddMetaData(NKT.17, metadata = num.NKT.label, col.name = 'Custom_num_label')
+Microglia.num <- AddMetaData(Microglia.13, metadata = num.microglia.label, col.name = 'Custom_num_label')
+NK.num <- AddMetaData(NK.16, metadata = num.NK.label, col.name = 'Custom_num_label')
+DC.num <- AddMetaData(DC.4, metadata = num.DC.label, col.name = 'Custom_num_label')
+Monocyte.num <- AddMetaData(Monocyte.14, metadata = num.mono.label, col.name = 'Custom_num_label')
+Endothelial.num <- AddMetaData(Endothelial.5, metadata = num.endo.label, col.name = 'Custom_num_label')
+Stromal.num <- AddMetaData(Stromal.cell.20, metadata = num.stromal.label, col.name = 'Custom_num_label')
+pro.Bcell.num <- AddMetaData(pro.Bcell.18, metadata = num.proB.label, col.name = 'Custom_num_label')
+Basophil.num <- AddMetaData(Basophil.3, metadata = num.Baso.label, col.name = 'Custom_num_label')
+ILC.num <- AddMetaData(ILC.11, metadata = num.ILC.label, col.name = 'Custom_num_label')
+TGD.num <- AddMetaData(TGD.22, metadata = num.Tgd.label, col.name = 'Custom_num_label')
+Neutrophil.num <- AddMetaData(Neutrophil.15, metadata = num.Neutro.label, col.name = 'Custom_num_label')
+Granulocyte.num <- AddMetaData(Granulocyte.9, metadata = num.Granulo.label, col.name = 'Custom_num_label')
+Stem.num <- AddMetaData(Stem.cell.19, metadata = num.stem.label, col.name = 'Custom_num_label')
+Eosinophil.num <- AddMetaData(Eosinophil.6, metadata = num.Eosino.label, col.name = 'Custom_num_label')
+RBC.num <- AddMetaData(RBC.7, metadata = num.RBC.label, col.name = 'Custom_num_label')
+Adipocyte.num <- AddMetaData(Adipocyte.1, metadata = num.Adipo.label, col.name = 'Custom_num_label')
+
+head(NKT.num[[]])
+tail(Hepatocytes.num[[]])
+
+merge.custom.anno.num.label <- merge(Hepatocytes.num, y = c(Fibroblasts.num, Bcell.num, Macrophage.num, Tcell.num, NKT.num, Microglia.num, NK.num, DC.num, Monocyte.num, Endothelial.num, Stromal.num, pro.Bcell.num, Basophil.num, ILC.num, TGD.num, Neutrophil.num, Granulocyte.num, Stem.num, Eosinophil.num, RBC.num, Adipocyte.num))
+
+levels(merge.custom.anno.num.label)
+Idents(merge.custom.anno.num.label) <- merge.custom.anno.num.label@meta.data$Custom_num_label
+levels(merge.custom.anno.num.label)
+##levels on our new custom numbers are NOT correct, so re-order them
+table(merge.custom.anno.num.label@meta.data$Custom_num_label)
+
+new.levels <- c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22")
+
+merge.custom.anno.num.label@meta.data$Custom_num_label <- factor(x = merge.custom.anno.num.label@meta.data$Custom_num_label, levels = new.levels)
+
+levels(merge.custom.anno.num.label)
+
+saveRDS(merge.custom.anno.num.label, file = "CDm.WDm.WDTm.merge.custom.anno.AND.number.label.RDS")
+##saveRDS to make quicker loading and re-run UMAP
+SingleR.custom.anno.num.labels <- readRDS("CDm.WDm.WDTm.merge.custom.anno.AND.number.label.RDS")
+##Do not forget to re-use custom PCA genes we found in STEP1!
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##visualize with different sets of custom labels now yay
+PCA.genes <- read.csv("D:/Singulomics Data/RNAseq_Analysis/Excel Files/IC Patterns/Genes for PCA.csv", header = TRUE, sep = ",")
+
+SingleR.custom.anno.num.labels <- NormalizeData(SingleR.custom.anno.num.labels, normalization.method = "LogNormalize", scale.factor = 10000, verbose = F)
+SingleR.custom.anno.num.labels <- FindVariableFeatures(SingleR.custom.anno.num.labels, selection.method = "vst", nfeatures = 3000, verbose = F)
+SingleR.custom.anno.num.labels <- ScaleData(SingleR.custom.anno.num.labels)
+SingleR.custom.anno.num.labels <- RunPCA(SingleR.custom.anno.num.labels, features = rownames(PCA.genes$Genes))
+
+ElbowPlot(SingleR.custom.anno.num.labels)
+
+Idents(SingleR.custom.anno.num.labels) <- SingleR.custom.anno.num.labels@meta.data$orig.ident
+
+DimPlot(SingleR.custom.anno.num.labels, reduction = "pca", split.by = "orig.ident") + labs(title = NULL) + NoLegend()
+
+print(SingleR.custom.anno.num.labels[["pca"]], dims = 1:5, nfeatures = 5)
+VizDimLoadings(SingleR.custom.anno.num.labels, dims = 3:4, reduction = "pca", balanced = TRUE)
+DimPlot(SingleR.custom.anno.num.labels, reduction = "pca")
+DimHeatmap(SingleR.custom.anno.num.labels, dims = 1:10, cells = 500, balanced = TRUE)
+
+SingleR.custom.anno.num.labels <- FindNeighbors(SingleR.custom.anno.num.labels, dims = 1:20)
+SingleR.custom.anno.num.labels <- FindClusters(SingleR.custom.anno.num.labels, resolution = 0.4)
+SingleR.custom.anno.num.labels <- RunUMAP(SingleR.custom.anno.num.labels, dims = 1:20, reduction = "pca")
+
+new.colors <- DiscretePalette(n = 22, "polychrome")
+
+DimPlot(SingleR.custom.anno.num.labels, cols = new.colors, reduction = "umap", pt.size = 0.9, group.by = "Custom_anno_label", label = TRUE, label.size = 3, repel = TRUE) + labs(title = NULL)
+options(ggrepel.max.overlaps = Inf)
+DimPlot(SingleR.custom.anno.num.labels, cols = new.colors, reduction = "umap", pt.size = 0.8, group.by = "Custom_num_label", split.by = "orig.ident", label = TRUE, label.size = 3, repel = TRUE) + labs(title = NULL) + NoLegend()
+
+saveRDS(SingleR.custom.anno.num.labels, file = "CDm.WDm.WDTm.merge.custom.cellanno.AND.numbers.label.RDS")
+
+##after saving file with new labels, we can also double check annotations with FeaturePlot() of known markers
+FeaturePlot(SingleR.custom.anno.num.labels, features = c("Cd3e", "Cd247"), blend = TRUE)
+FeaturePlot(SingleR.custom.anno.num.labels, features = c("Cd79a", "Cd19"), blend = TRUE)
+FeaturePlot(SingleR.custom.anno.num.labels, features = c("Adgre1", "Cd68"), blend = TRUE)
+FeaturePlot(SingleR.custom.anno.num.labels, features = c("Hnf4a", "Alb"), blend = TRUE)
+FeaturePlot(SingleR.custom.anno.num.labels, features = c("Klrb1c", "Ncr1"), blend = TRUE)
+
+##End of STEP3
+##REMEMBER TO CLEAR AND CLEANUP WORKSPACE WHEN POSSIBLE
+###############################################################################################################################################################################
+##STEP4: Utilize scSorter algorithm to quantify subsets of annotated cell types of interest
+##then the goal is to re-visualize immune cells (ICs) and non-ICs separately to increase resolution of ICs in PCA and UMAP
+###############################################################################################################################################################################
+All.cells.customized.labels <- readRDS("CDm.WDm.WDTm.merge.custom.cellanno.AND.numbers.label.RDS")
+
+##first, find primary T cell subsets (CD4, CD8, Unknown) with GL14 marker genes
+##see materials and methods section for the use of two different set of markers for sorting CD4 and CD8 
+markers <- read.delim("D:/Singulomics Data/RNAseq_Analysis/GeneList/GeneList14.csv", sep = ",")
+#markers <- read.delim("D:/Singulomics Data/RNAseq_Analysis/GeneList/GeneList18.csv", sep = ",")
+
+Idents(All.cells.customized.labels) <- All.cells.customized.labels@meta.data$singleR.labels
+Tcells.w.labels <- subset(All.cells.customized.labels, idents = "T cells", invert = FALSE)
+
+topgenes <- head(VariableFeatures(Tcells.w.labels), 3000)
+expr = GetAssayData(Tcells.w.labels)
+topgene_filter = rowSums(as.matrix(expr)[topgenes, ]!=0) > ncol(expr)*.1
+topgenes = topgenes[topgene_filter]
+picked_genes = unique(c(markers$Marker, topgenes))
+expr = expr[rownames(expr) %in% picked_genes, ]
+
+rts <- scSorter(expr, markers)
+Tcells.w.labels$Predicted_Type <- rts$Pred_Type
+
+print(table(rts$Pred_Type))
+
+CellType <- Tcells.w.labels@meta.data$Predicted_Type
+head(names(Tcells.w.labels@active.ident))
+names(CellType) <- names(Tcells.w.labels@active.ident)
+CellType_Subset <- CellType[CellType == "Sorted Cells"]
+Idents(Tcells.w.labels) <- Tcells.w.labels@meta.data$orig.ident
+
+Idents(Tcells.w.labels) <- Tcells.w.labels@meta.data$Predicted_Type
+Tcells.w.labels.sorted <- subset(x = Tcells.w.labels, idents = c("CD4", "CD8", "Unknown"), invert = FALSE)
+
+CD4T.sorted <- subset(Tcells.w.labels.sorted, idents = "CD4", invert = FALSE)
+table(CD4T.sorted@meta.data$orig.ident)
+CD8T.sorted <- subset(Tcells.w.labels.sorted, idents = "CD8", invert = FALSE)
+table(CD8T.sorted@meta.data$orig.ident)
+UnkT.sorted <- subset(Tcells.w.labels.sorted, idents = "Unknown", invert = FALSE)
+table(UnkT.sorted@meta.data$orig.ident)
+
+##end of finding T cell subsets
+saveRDS(Tcells.w.labels.sorted, file = "Tcells.w.custom.labels.scSorted")
+##now find Macrophage subsets (M1, M2, Kupffer, Unknown) with GL8 marker genes
+markers.MP <- read.delim("D:/Singulomics Data/RNAseq_Analysis/GeneList/GeneList8.csv", sep = ",")
+
+Idents(All.cells.customized.labels) <- All.cells.customized.labels@meta.data$singleR.labels
+MP.w.labels <- subset(All.cells.customized.labels, idents = "Macrophages", invert = FALSE)
+
+topgenes <- head(VariableFeatures(MP.w.labels), 3000)
+expr = GetAssayData(MP.w.labels)
+topgene_filter = rowSums(as.matrix(expr)[topgenes, ]!=0) > ncol(expr)*.1
+topgenes = topgenes[topgene_filter]
+picked_genes = unique(c(markers.MP$Marker, topgenes))
+expr = expr[rownames(expr) %in% picked_genes, ]
+
+rts <- scSorter(expr, markers.MP)
+MP.w.labels$Predicted_Type <- rts$Pred_Type
+
+print(table(rts$Pred_Type))
+
+CellType <- MP.w.labels@meta.data$Predicted_Type
+head(names(MP.w.labels@active.ident))
+names(CellType) <- names(MP.w.labels@active.ident)
+CellType_Subset <- CellType[CellType == "Sorted Cells"]
+Idents(MP.w.labels) <- MP.w.labels@meta.data$orig.ident
+
+Idents(MP.w.labels) <- MP.w.labels@meta.data$Predicted_Type
+MP.w.labels.sorted <- subset(x = MP.w.labels, idents = c("M1", "M2", "Kupffer", "Unknown"), invert = FALSE)
+
+Kupffer.sorted <- subset(x = MP.w.labels.sorted, idents = "Kupffer", invert = FALSE)
+table(Kupffer.sorted@meta.data$orig.ident)
+M1.sorted <- subset(x = MP.w.labels.sorted, idents = "M1", invert = FALSE)
+table(M1.sorted@meta.data$orig.ident)
+M2.sorted <- subset(x = MP.w.labels.sorted, idents = "M2", invert = FALSE)
+table(M2.sorted@meta.data$orig.ident)
+UnkMP.sorted <- subset(x = MP.w.labels.sorted, idents = "Unknown", invert = FALSE)
+table(UnkMP.sorted@meta.data$orig.ident)
+
+##end of finding Macrophage subsets
+saveRDS(MP.w.labels.sorted, file = "Macrophages.w.custom.labels.scSorted")
+##now find DC subsets (DC1, DC2, pDC, Unknown) with GL10 marker genes
+markers.DC <- read.delim("D:/Singulomics Data/RNAseq_Analysis/GeneList/GeneList10.csv", sep = ",")
+
+Idents(All.cells.customized.labels) <- All.cells.customized.labels@meta.data$singleR.labels
+DC.w.labels <- subset(All.cells.customized.labels, idents = "DC", invert = FALSE)
+
+topgenes <- head(VariableFeatures(DC.w.labels), 3000)
+expr = GetAssayData(DC.w.labels)
+topgene_filter = rowSums(as.matrix(expr)[topgenes, ]!=0) > ncol(expr)*.1
+topgenes = topgenes[topgene_filter]
+picked_genes = unique(c(markers.DC$Marker, topgenes))
+expr = expr[rownames(expr) %in% picked_genes, ]
+
+rts <- scSorter(expr, markers.DC)
+DC.w.labels$Predicted_Type <- rts$Pred_Type
+
+print(table(rts$Pred_Type))
+
+CellType <- DC.w.labels@meta.data$Predicted_Type
+head(names(DC.w.labels@active.ident))
+names(CellType) <- names(DC.w.labels@active.ident)
+CellType_Subset <- CellType[CellType == "Sorted Cells"]
+Idents(DC.w.labels) <- DC.w.labels@meta.data$orig.ident
+
+Idents(DC.w.labels) <- DC.w.labels@meta.data$Predicted_Type
+DC.w.labels.sorted <- subset(x = DC.w.labels, idents = c("cDC1", "cDC2", "pDC", "Unknown"), invert = FALSE)
+
+DC1.sorted <- subset(x = DC.w.labels.sorted, idents = "cDC1", invert = FALSE)
+table(DC1.sorted@meta.data$orig.ident)
+DC2.sorted <- subset(x = DC.w.labels.sorted, idents = "cDC2", invert = FALSE)
+table(DC2.sorted@meta.data$orig.ident)
+pDC.sorted <- subset(x = DC.w.labels.sorted, idents = "pDC", invert = FALSE)
+table(pDC.sorted@meta.data$orig.ident)
+UnkDC.sorted <- subset(x = DC.w.labels.sorted, idents = "Unknown", invert = FALSE)
+table(UnkDC.sorted@meta.data$orig.ident)
+
+##end of finding DC subsets
+saveRDS(DC.w.labels.sorted, file = "DC.w.custom.labels.scSorted")
+##now find CD4 Tcell subsets (Th1, Th2, Th17, Treg, Unknown) with GL3 marker genes
+markers.CD4T <- read.delim("D:/Singulomics Data/RNAseq_Analysis/GeneList/GeneList3.csv", sep = ",")
+
+#!Tcells.w.labels.sorted <- subset(x = Tcells.w.labels, idents = c("CD4", "CD8", "Unknown"), invert = FALSE)
+CD4T.w.labels <- subset(Tcells.w.labels.sorted, idents = "CD4", invert = FALSE)
+
+topgenes <- head(VariableFeatures(CD4T.w.labels), 3000)
+expr = GetAssayData(CD4T.w.labels)
+topgene_filter = rowSums(as.matrix(expr)[topgenes, ]!=0) > ncol(expr)*.1
+topgenes = topgenes[topgene_filter]
+picked_genes = unique(c(markers.CD4T$Marker, topgenes))
+expr = expr[rownames(expr) %in% picked_genes, ]
+
+rts <- scSorter(expr, markers.CD4T)
+CD4T.w.labels$Predicted_Type <- rts$Pred_Type
+
+print(table(rts$Pred_Type))
+
+CellType <- CD4T.w.labels@meta.data$Predicted_Type
+head(names(CD4T.w.labels@active.ident))
+names(CellType) <- names(CD4T.w.labels@active.ident)
+CellType_Subset <- CellType[CellType == "Sorted Cells"]
+Idents(CD4T.w.labels) <- CD4T.w.labels@meta.data$orig.ident
+
+Idents(CD4T.w.labels) <- CD4T.w.labels@meta.data$Predicted_Type
+CD4T.w.labels.sorted <- subset(x = CD4T.w.labels, idents = c("Th1", "Th2", "Th17", "Treg", "Unknown"), invert = FALSE)
+
+Th1.sorted <- subset(x = CD4T.w.labels.sorted, idents = "Th1", invert = FALSE)
+table(Th1.sorted@meta.data$orig.ident)
+Th2.sorted <- subset(x = CD4T.w.labels.sorted, idents = "Th2", invert = FALSE)
+table(Th2.sorted@meta.data$orig.ident)
+Th17.sorted <- subset(x = CD4T.w.labels.sorted, idents = "Th17", invert = FALSE)
+table(Th17.sorted@meta.data$orig.ident)
+Treg.sorted <- subset(x = CD4T.w.labels.sorted, idents = "Treg", invert = FALSE)
+table(Treg.sorted@meta.data$orig.ident)
+UnkCD4.sorted <- subset(x = CD4T.w.labels.sorted, idents = "Unknown", invert = FALSE)
+table(UnkCD4.sorted@meta.data$orig.ident)
+
+##end of finding CD4 T subsets
+saveRDS(CD4T.w.labels.sorted, file = "CD4HelperT.w.custom.labels.scSorted")
+
+##now find B cell subsets (B1 and B2) and if any monocytes could be MDSC
+markers.B <- read.delim("D:/Singulomics Data/RNAseq_Analysis/GeneList/GeneList16.csv", sep = ",")
+
+Idents(All.cells.customized.labels) <- All.cells.customized.labels@meta.data$singleR.labels
+Bcells.w.labels <- subset(All.cells.customized.labels, idents = "B cells", invert = FALSE)
+
+topgenes <- head(VariableFeatures(Bcells.w.labels), 3000)
+expr = GetAssayData(Bcells.w.labels)
+topgene_filter = rowSums(as.matrix(expr)[topgenes, ]!=0) > ncol(expr)*.1
+topgenes = topgenes[topgene_filter]
+picked_genes = unique(c(markers.B$Marker, topgenes))
+expr = expr[rownames(expr) %in% picked_genes, ]
+
+rts <- scSorter(expr, markers.B)
+Bcells.w.labels$Predicted_Type <- rts$Pred_Type
+
+print(table(rts$Pred_Type))
+
+CellType <- Bcells.w.labels@meta.data$Predicted_Type
+head(names(Bcells.w.labels@active.ident))
+names(CellType) <- names(Bcells.w.labels@active.ident)
+CellType_Subset <- CellType[CellType == "Sorted Cells"]
+Idents(Bcells.w.labels) <- Bcells.w.labels@meta.data$orig.ident
+
+Idents(Bcells.w.labels) <- Bcells.w.labels@meta.data$Predicted_Type
+Bcells.w.labels.sorted <- subset(x = Bcells.w.labels, idents = c("B1", "B2", "Unknown"), invert = FALSE)
+
+B1.sorted <- subset(x = Bcells.w.labels.sorted, idents = "B1", invert = FALSE)
+table(B1.sorted@meta.data$orig.ident)
+B2.sorted <- subset(x = Bcells.w.labels.sorted, idents = "B2", invert = FALSE)
+table(B2.sorted@meta.data$orig.ident)
+UnkB.sorted <- subset(x = Bcells.w.labels.sorted, idents = "Unknown", invert = FALSE)
+table(UnkB.sorted@meta.data$orig.ident)
+##end of finding B cell subsets
+saveRDS(Bcells.w.labels.sorted, file = "Bcells.w.custom.labels.scSorted")
+
+# # # #MDSC# # # # #
+markers.MDSC <- read.delim("D:/Singulomics Data/RNAseq_Analysis/GeneList/GeneList17.csv", sep = ",")
+
+Idents(All.cells.customized.labels) <- All.cells.customized.labels@meta.data$singleR.labels
+Mono.w.labels <- subset(All.cells.customized.labels, idents = "Monocytes", invert = FALSE)
+
+topgenes <- head(VariableFeatures(Mono.w.labels), 3000)
+expr = GetAssayData(Mono.w.labels)
+topgene_filter = rowSums(as.matrix(expr)[topgenes, ]!=0) > ncol(expr)*.1
+topgenes = topgenes[topgene_filter]
+picked_genes = unique(c(markers.MDSC$Marker, topgenes))
+expr = expr[rownames(expr) %in% picked_genes, ]
+
+rts <- scSorter(expr, markers.MDSC)
+Mono.w.labels$Predicted_Type <- rts$Pred_Type
+
+print(table(rts$Pred_Type))
+
+CellType <- Mono.w.labels@meta.data$Predicted_Type
+head(names(Mono.w.labels@active.ident))
+names(CellType) <- names(Mono.w.labels@active.ident)
+CellType_Subset <- CellType[CellType == "Sorted Cells"]
+Idents(Mono.w.labels) <- Mono.w.labels@meta.data$orig.ident
+
+Idents(Mono.w.labels) <- Mono.w.labels@meta.data$Predicted_Type
+Mono.w.labels.sorted <- subset(x = Mono.w.labels, idents = c("MDSC", "Monocyte", "Unknown"), invert = FALSE)
+
+MDSC.sorted <- subset(x = Mono.w.labels.sorted, idents = "MDSC", invert = FALSE)
+table(MDSC.sorted@meta.data$orig.ident)
+Mono.sorted <- subset(x = Mono.w.labels.sorted, idents = "Monocyte", invert = FALSE)
+table(Mono.sorted@meta.data$orig.ident)
+Mono.Unk.sorted <- subset(x = Mono.w.labels.sorted, idents = "Unknown", invert = FALSE)
+table(Mono.Unk.sorted@meta.data$orig.ident)
+
+saveRDS(Mono.w.labels.sorted, file = "Monocytes.w.custom.labels.scSorted")
+##after quantifying and recording number of each set of subtypes, visualize just ICs and non-ICs separately 
+Idents(All.cells.customized.labels) <- All.cells.customized.labels@meta.data$singleR.labels
+Remaining.ICs <- subset(All.cells.customized.labels, idents = c("B cells, pro", "Basophils", "Eosinophils", "Granulocytes", "ILC", "Microglia", "Neutrophils", "NK cells", "NKT", "Tgd"))
+
+Known.Monocytes <- merge(Mono.sorted, y = Mono.Unk.sorted)
+##merge all found ones so they retain their Predicted_type and custom_anno/custom_num labels
+##we keep unknown monocytes from scSorter bc 2 reference databases already classified them as monocytes
+scSorted.ICs <- merge(CD8T.sorted, y = c(Kupffer.sorted, M1.sorted, M2.sorted, DC1.sorted, DC2.sorted, pDC.sorted, Th1.sorted, Th2.sorted, Th17.sorted, Treg.sorted, B1.sorted, B2.sorted, MDSC.sorted, Known.Monocytes))
+scSorted.IC.Unks <- merge(UnkT.sorted, y = c(UnkMP.sorted, UnkDC.sorted, UnkCD4.sorted, UnkB.sorted))
+
+All.sorted.ICs <- merge(Remaining.ICs, y = scSorted.ICs)
+saveRDS(All.sorted.ICs, file = "All.singleRannotated.and.scSorted.labels")
+saveRDS(scSorted.IC.Unks, file = "All.Unknown.scSorted.labels")
+
+##Now we need to undergo another round of giving custom labels (since Predicted_type and singleR.labels are two different pieces of metadata)
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##first for ICs (SingleR.labels) and sorted subsets (scSorter)
+B1.sorted
+B2.sorted
+Basophils <- subset(Remaining.ICs, idents = "Basophils")
+CD8T.sorted
+DC1.sorted
+DC2.sorted
+Eosinophils <- subset(Remaining.ICs, idents = "Eosinophils")
+Granulocytes <- subset(Remaining.ICs, idents = "Granulocytes")
+ILC <- subset(Remaining.ICs, idents = "ILC")
+Kupffer.sorted
+M1.sorted
+M2.sorted
+MDSC.sorted
+Microglia <- subset(Remaining.ICs, idents = "Microglia")
+Known.Monocytes
+Neutrophils <- subset(Remaining.ICs, idents = "Neutrophils")
+NK <- subset(Remaining.ICs, idents = "NK cells")
+NKT <- subset(Remaining.ICs, idents = "NKT")
+pDC.sorted
+pro.Bcells <- subset(Remaining.ICs, idents = "B cells, pro")
+TGD <- subset(Remaining.ICs, idents = "Tgd")
+Th1.sorted
+Th2.sorted
+Th17.sorted
+Treg.sorted
+UnkB.sorted
+UnkCD4.sorted
+UnkDC.sorted
+UnkMP.sorted
+UnkT.sorted
+
+new.label.B1 <- "B1"
+new.label.B2 <- "B2"
+new.label.Baso <- "Basophils"
+new.label.CD8T <- "CD8 T"
+new.label.DC1 <- "DC1"
+new.label.DC2 <- "DC2"
+new.label.Eosino <- "Eosinophils"
+new.label.Granulo <- "Granulocytes"
+new.label.ILC <- "ILC"
+new.label.Kupffer <- "Kupffer"
+new.label.M1 <- "M1"
+new.label.M2 <- "M2"
+new.label.MDSC <- "MDSC"
+new.label.Microglia <- "Microglia"
+new.label.Mono <- "Monocytes"
+new.label.Neutro <- "Neutrophils"
+new.label.NK <- "NK"
+new.label.NKT <- "NKT"
+new.label.pDC <- "pDC"
+new.label.proBcell <- "pro-B cells"
+new.label.Tgd <- "Tgd"
+new.label.Th1 <- "Th1"
+new.label.Th17 <- "Th17"
+new.label.Th2 <- "Th2"
+new.label.Treg <- "Treg"
+new.label.UnkB <- "Unk.B"
+new.label.UnkCD4 <- "Unk.CD4"
+new.label.UnkDC <- "Unk.DC"
+new.label.UnkMP <- "M1-like"
+new.label.UnkT <- "Unk.T"
+
+new.B1 <- AddMetaData(B1.sorted, metadata = new.label.B1, col.name = 'scSorter.singleR.labels')
+new.B2 <- AddMetaData(B2.sorted, metadata = new.label.B2, col.name = 'scSorter.singleR.labels')
+new.Basophil <- AddMetaData(Basophils, metadata = new.label.Baso, col.name = 'scSorter.singleR.labels')
+new.CD8T <- AddMetaData(CD8T.sorted, metadata = new.label.CD8T, col.name = 'scSorter.singleR.labels')
+new.DC1 <- AddMetaData(DC1.sorted, metadata = new.label.DC1, col.name = 'scSorter.singleR.labels')
+new.DC2 <- AddMetaData(DC2.sorted, metadata = new.label.DC2, col.name = 'scSorter.singleR.labels')
+new.Eosinophil <- AddMetaData(Eosinophils, metadata = new.label.Eosino, col.name = 'scSorter.singleR.labels')
+new.Granulocyte <- AddMetaData(Granulocytes, metadata = new.label.Granulo, col.name = 'scSorter.singleR.labels')
+new.ILC <- AddMetaData(ILC, metadata = new.label.ILC, col.name = 'scSorter.singleR.labels')
+new.Kupffer <- AddMetaData(Kupffer.sorted, metadata = new.label.Kupffer, col.name = 'scSorter.singleR.labels')
+new.M1 <- AddMetaData(M1.sorted, metadata = new.label.M1, col.name = 'scSorter.singleR.labels')
+new.M2 <- AddMetaData(M2.sorted, metadata = new.label.M2, col.name = 'scSorter.singleR.labels')
+new.MDSC <- AddMetaData(MDSC.sorted, metadata = new.label.MDSC, col.name = 'scSorter.singleR.labels')
+new.Microglia <- AddMetaData(Microglia, metadata = new.label.Microglia, col.name = 'scSorter.singleR.labels')
+new.Monocyte <- AddMetaData(Known.Monocytes, metadata = new.label.Mono, col.name = 'scSorter.singleR.labels')
+new.Neutrophil <- AddMetaData(Neutrophils, metadata = new.label.Neutro, col.name = 'scSorter.singleR.labels')
+new.NK <- AddMetaData(NK, metadata = new.label.NK, col.name = 'scSorter.singleR.labels')
+new.NKT <- AddMetaData(NKT, metadata = new.label.NKT, col.name = 'scSorter.singleR.labels')
+new.pDC <- AddMetaData(pDC.sorted, metadata = new.label.pDC, col.name = 'scSorter.singleR.labels')
+new.proBcell <- AddMetaData(pro.Bcells, metadata = new.label.proBcell, col.name = 'scSorter.singleR.labels')
+new.TGD <- AddMetaData(TGD, metadata = new.label.Tgd, col.name = 'scSorter.singleR.labels')
+new.Th1 <- AddMetaData(Th1.sorted, metadata = new.label.Th1, col.name = 'scSorter.singleR.labels')
+new.Th2 <- AddMetaData(Th2.sorted, metadata = new.label.Th2, col.name = 'scSorter.singleR.labels')
+new.Th17 <- AddMetaData(Th17.sorted, metadata = new.label.Th17, col.name = 'scSorter.singleR.labels')
+new.Treg <- AddMetaData(Treg.sorted, metadata = new.label.Treg, col.name = 'scSorter.singleR.labels')
+new.UnkB <- AddMetaData(UnkB.sorted, metadata = new.label.UnkB, col.name = 'scSorter.singleR.labels')
+new.UnkCD4 <- AddMetaData(UnkCD4.sorted, metadata = new.label.UnkCD4, col.name = 'scSorter.singleR.labels')
+new.UnkDC <- AddMetaData(UnkDC.sorted, metadata = new.label.UnkDC, col.name = 'scSorter.singleR.labels')
+new.UnkMP <- AddMetaData(UnkMP.sorted, metadata = new.label.UnkMP, col.name = 'scSorter.singleR.labels')
+new.UnkT <- AddMetaData(UnkT.sorted, metadata = new.label.UnkT, col.name = 'scSorter.singleR.labels')
+
+merged.IC.customized.labels <- merge(new.B1, y = c(new.B2, new.Basophil, new.CD8T, new.DC1, new.DC2, new.Eosinophil, new.Granulocyte, new.ILC, new.Kupffer, new.M1, new.M2, new.MDSC, new.Microglia, new.Monocyte, new.Neutrophil, new.NK, new.NKT, new.pDC, new.proBcell, new.TGD, new.Th1, new.Th2, new.Th17, new.Treg, new.UnkB, new.UnkCD4, new.UnkDC, new.UnkMP, new.UnkT))
+
+levels(merged.IC.customized.labels)
+
+table(merged.IC.customized.labels@meta.data$scSorter.singleR.labels)
+
+Idents(merged.IC.customized.labels) <- merged.IC.customized.labels@meta.data$scSorter.singleR.labels
+
+levels(merged.IC.customized.labels)
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##Now do the same thing for NON-ICs
+Adipo <- subset(All.cells.customized.labels, idents = "Adipocytes")
+Endo.cell <- subset(All.cells.customized.labels, idents = "Endothelial cells")
+Erythro <- subset(All.cells.customized.labels, idents = "Erythrocytes")
+Fibro <- subset(All.cells.customized.labels, idents = "Fibroblasts")
+Hepato <- subset(All.cells.customized.labels, idents = "Hepatocytes")
+Stem.cells <- subset(All.cells.customized.labels, idents = "Stem cells")
+Stromal.cells <- subset(All.cells.customized.labels, idents = "Stromal cells")
+
+new.label.Adipo <- "Adipocytes"
+new.label.Endo <- "Endothelial cells"
+new.label.Erythro <- "Erythrocytes"
+new.label.Fibro <- "Fibroblasts"
+new.label.Hepato <- "Hepatocytes"
+new.label.stem <- "Stem cells"
+new.label.stromal <- "Stromal cells"
+
+new.Adipo <- AddMetaData(Adipo, metadata = new.label.Adipo, col.name = 'scSorter.singleR.labels')
+new.Endo <- AddMetaData(Endo.cell, metadata = new.label.Endo, col.name = 'scSorter.singleR.labels')
+new.Erythro <- AddMetaData(Erythro, metadata = new.label.Erythro, col.name = 'scSorter.singleR.labels')
+new.Fibro <- AddMetaData(Fibro, metadata = new.label.Fibro, col.name = 'scSorter.singleR.labels')
+new.Hepato <- AddMetaData(Hepato, metadata = new.label.Hepato, col.name = 'scSorter.singleR.labels')
+new.stem <- AddMetaData(Stem.cells, metadata = new.label.stem, col.name = 'scSorter.singleR.labels')
+new.stromal <- AddMetaData(Stromal.cells, metadata = new.label.stromal, col.name = 'scSorter.singleR.labels')
+
+merged.nonIC.customized.labels <- merge(new.Adipo, y = c(new.Endo, new.Erythro, new.Fibro, new.Hepato, new.stem, new.stromal))
+
+levels(merged.nonIC.customized.labels)
+
+table(merged.nonIC.customized.labels@meta.data$scSorter.singleR.labels)
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##NOW, PLEASE SAVERDS SO WE CAN MOVE ON TO VISUALIZATION AND ADJUST FACTOR LVLS IF NEEDED
+saveRDS(merged.IC.customized.labels, file = "ICs.customized.labels")
+saveRDS(merged.nonIC.customized.labels, file = "nonICs.customized.labels")
+##FINALLY, WITH NEW LABELS WE CAN VISUALIZE ICs AND NON-ICs SEPARATELY WITHOUT CROSS-CONTAMINATION
+ICs.labeled <- readRDS("ICs.customized.labels")
+nonICs.labeled <- readRDS("nonICs.customized.labels")
+
+##first do with ICs
+PCA.genes <- read.csv("D:/Singulomics Data/RNAseq_Analysis/Excel Files/IC Patterns/Genes for PCA.csv", header = TRUE, sep = ",")
+##still using PCA genes we found in Step1 
+ICs.labeled <- NormalizeData(ICs.labeled, normalization.method = "LogNormalize", scale.factor = 10000, verbose = F)
+ICs.labeled <- FindVariableFeatures(ICs.labeled, selection.method = "vst", nfeatures = 3000, verbose = F)
+ICs.labeled <- ScaleData(ICs.labeled)
+ICs.labeled <- RunPCA(ICs.labeled, features = rownames(PCA.genes$Genes))
+
+new.colors.IC <- DiscretePalette(n = 30, "polychrome")
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$orig.ident
+new.origident.levels.IC <- c("Ctrl", "Pre-T", "Post-T")
+ICs.labeled@meta.data$orig.ident <- factor(x = ICs.labeled@meta.data$orig.ident, levels = new.origident.levels.IC)
+
+##try to visualize cells a few different ways for whatever looks best
+DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "pca", pt.size = 0.9, group.by = "scSorter.singleR.labels") + labs(title = NULL) + theme(legend.text = element_text(size = 9), legend.title = element_text(size = 8))
+DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "pca", pt.size = 0.9, dims = 3:4, group.by = "scSorter.singleR.labels") + labs(title = NULL) + theme(legend.text = element_text(size = 9), legend.title = element_text(size = 8))
+DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "pca", pt.size = 0.9, dims = 3:4, label = TRUE, label.size = 3.25, repel = TRUE, group.by = "scSorter.singleR.labels") + labs(title = NULL) + NoLegend()
+DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "pca", pt.size = 0.9, dims = 2:3, label = TRUE, label.size = 3.25, repel = TRUE, group.by = "scSorter.singleR.labels") + labs(title = NULL) + NoLegend()
+
+DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "pca", group.by = "scSorter.singleR.labels", split.by = "orig.ident") + labs(title = NULL)
+DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "pca", dims = 3:4, group.by = "scSorter.singleR.labels", split.by = "orig.ident") + labs(title = NULL)
+
+ICs.labeled <- FindNeighbors(ICs.labeled, dims = 1:20, verbose = FALSE)
+ICs.labeled <- FindClusters(ICs.labeled, resolution = 0.4, dims = 1:20, verbose = FALSE)
+ICs.labeled <- RunUMAP(ICs.labeled, dims = 1:20, reduction = "pca")
+options(ggrepel.max.overlaps = Inf)
+DimPlot(ICs.labeled, reduction = "umap", pt.size = 0.8, label = TRUE, label.size = 4, repel = TRUE)
+DimPlot(ICs.labeled, reduction = "umap", pt.size = 0.6, split.by = "orig.ident", label = TRUE, label.size = 3, repel = TRUE, ncol = 3)
+
+#new.colors.IC <- DiscretePalette(n = 27, "polychrome")
+DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", label = TRUE, label.size = 4, repel = TRUE) + labs(title = NULL) + NoLegend()
+DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", label = TRUE, label.size = 3, repel = TRUE) + labs(title = NULL) + theme(legend.text = element_text(size = 9), legend.title = element_text(size = 8))
+#DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", split.by = "orig.ident", label = TRUE, label.size = 3, repel = TRUE, ncol = 3) + labs(title = NULL)
+#DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.ICnum.labels", label = TRUE, label.size = 4, repel = TRUE) + labs(title = NULL)
+DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", split.by = "orig.ident", label = TRUE, label.size = 3, repel = TRUE, ncol = 3) + labs(title = NULL)
+DimPlot(ICs.labeled, cols = new.colors.IC, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", split.by = "orig.ident", label = TRUE, label.size = 3, repel = TRUE, ncol = 3) + labs(title = NULL) + NoLegend()
+
+##now do with non-ICs
+nonICs.labeled <- NormalizeData(nonICs.labeled, normalization.method = "LogNormalize", scale.factor = 10000, verbose = F)
+nonICs.labeled <- FindVariableFeatures(nonICs.labeled, selection.method = "vst", nfeatures = 3000, verbose = F)
+nonICs.labeled <- ScaleData(nonICs.labeled)
+nonICs.labeled <- RunPCA(nonICs.labeled, features = rownames(PCA.genes$Genes))
+
+Idents(nonICs.labeled) <- nonICs.labeled@meta.data$orig.ident
+new.origident.levels <- c("Ctrl", "Pre-T", "Post-T")
+nonICs.labeled@meta.data$orig.ident <- factor(x = nonICs.labeled@meta.data$orig.ident, levels = new.origident.levels)
+
+new.colors.nonIC <- c("cyan", "dark green", "gray", "red", "green", "blue", "orange")
+
+DimPlot(nonICs.labeled, cols = new.colors.nonIC, reduction = "pca", group.by = "scSorter.singleR.labels") + labs(title = NULL)
+DimPlot(nonICs.labeled, cols = new.colors.nonIC, reduction = "pca", dims = 3:4, group.by = "scSorter.singleR.labels") + labs(title = NULL)
+DimPlot(nonICs.labeled, cols = new.colors.nonIC, reduction = "pca", group.by = "scSorter.singleR.labels", split.by = "orig.ident") + labs(title = NULL)
+DimPlot(nonICs.labeled, cols = new.colors.nonIC, reduction = "pca", dims = 3:4, group.by = "scSorter.singleR.labels", split.by = "orig.ident") + labs(title = NULL)
+
+nonICs.labeled <- FindNeighbors(nonICs.labeled, dims = 1:20, verbose = FALSE)
+nonICs.labeled <- FindClusters(nonICs.labeled, resolution = 0.4, dims = 1:20, verbose = FALSE)
+nonICs.labeled <- RunUMAP(nonICs.labeled, dims = 1:20, reduction = "pca")
+options(ggrepel.max.overlaps = Inf)
+DimPlot(nonICs.labeled, reduction = "umap", pt.size = 0.8, label = TRUE, label.size = 4, repel = TRUE)
+DimPlot(nonICs.labeled, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", split.by = "orig.ident", cols = new.colors.nonIC, repel = TRUE, ncol = 3) + labs(title = NULL)
+DimPlot(nonICs.labeled, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", split.by = "orig.ident", cols = new.colors.nonIC, repel = TRUE, ncol = 3) + labs(title = NULL) + NoLegend()
+
+#new.colors.nonIC <- DiscretePalette(n = 7, "polychrome")
+DimPlot(nonICs.labeled, cols = new.colors.nonIC, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", label = TRUE, label.size = 4, repel = TRUE) + labs(title = NULL)
+#DimPlot(nonICs.labeled, cols = new.colors.nonIC, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", split.by = "orig.ident", label = TRUE, label.size = 3, repel = TRUE, ncol = 3) + labs(title = NULL)
+
+##End of STEP4
+##REMEMBER TO CLEAR AND CLEANUP WORKSPACE WHEN POSSIBLE
+##########################################################################################################################################################################################
+##STEP5: Functional assessment of various genes involved in these specific cell types first with DESeq2 and then Seurat for cytokines, chemokines, activation markers, etc.
+##########################################################################################################################################################################################
+##load in data with just annotated cell type PCAs to use cell selector for DESeq2 (cell.selector is useful, but more than likely just want to subset the annotated cell types of interest)
+##this is set up so we can easily load in different data or assess different populations by getting it here in Part1
+##i.e. the code just needs to be slightly changed upstream, and only other thing that needs to change is outfile name/location
+
+##Part1: Get cells of interest needed for assessment (only if wanting to use cell.selector)
+SingleR.step3.load.in <- readRDS("CDm.WDm.WDTm.combo.annotate.me.with.ref.databases.RDS")
+
+Idents(SingleR.step3.load.in) <- SingleR.step3.load.in@meta.data$orig.ident
+new.origident.levels <- c("Ctrl", "Pre-T", "Post-T")
+SingleR.step3.load.in@meta.data$orig.ident <- factor(x = SingleR.step3.load.in@meta.data$orig.ident, levels = new.origident.levels)
+
+Idents(SingleR.step3.load.in) <- SingleR.step3.load.in@meta.data$singleR.labels
+
+new.colors <- DiscretePalette(n = 22, "polychrome")
+
+plot <- DimPlot(SingleR.step3.load.in, reduction = "pca", pt.size = 0.4, cols = new.colors, group.by = "singleR.labels", repel = TRUE) 
+select.cells <- CellSelector(plot = plot)
+head(select.cells)
+tail(select.cells)
+
+Idents(SingleR.step3.load.in, cells = select.cells) <- "Selected.cells"
+CDm.WDm.WDTm.selected <- subset(SingleR.step3.load.in, cells = select.cells)
+
+saveRDS(CDm.WDm.WDTm.selected, file = "Selected.Cells.SAVED")
+
+##Part2: cleanup workspace and reload files to prep for IPA file generation step 1
+CDm.WDm.WDTm.cells <- readRDS("Selected.Cells.SAVED")
+DimPlot(CDm.WDm.WDTm.cells, reduction = "pca", pt.size = 0.4, cols = new.colors, group.by = "singleR.labels", repel = TRUE) + labs(title = NULL)
+DimPlot(CDm.WDm.WDTm.cells, reduction = "pca", pt.size = 0.4, cols = new.colors, group.by = "singleR.labels", split.by = "orig.ident", repel = TRUE) + labs(title = NULL)
+
+##use this to find other cells of interest for this step (like all immune cells with custom labels from step 4, or SingleR annotated cell types)
+ICs.labeled <- readRDS("ICs.customized.labels")
+#nonICs.labeled <- readRDS("nonICs.customized.labels")
+#all.cells <- merge(ICs.labeled, y = nonICs.labeled)
+
+#Hepatocytes <- subset(nonICs.labeled, idents = "Hepatocytes", invert = FALSE)
+#Fibroblasts <- subset(nonICs.labeled, idents = "Fibroblasts", invert = FALSE)
+
+#All.T.sorted <- subset(ICs.labeled, idents = c("Th1", "Th17", "Th2", "Treg", "CD8 T"), invert = FALSE)
+#!#Idents(ICs.labeled) <- ICs.labeled@meta.data$singleR.labels
+#Tcells <- subset(ICs.labeled, idents = "T cells", invert = FALSE)
+#NK.NKT <- subset(ICs.labeled, idents = c("NK", "NKT"), invert = FALSE)
+#DC <- subset(ICs.labeled, idents = "DC", invert = FALSE)
+#Macrophage <- subset(ICs.labeled, idents = "Macrophages")
+#Monocyte <- subset(ICs.labeled, idents = "Monocytes", invert = FALSE)
+#Bcells <- subset(ICs.labeled, idents = c("B cells", "B cells, pro"), invert = FALSE)
+#remaining.ICs <- subset(ICs.labeled, idents = c("Basophils", "Eosinophils", "Granulocytes", "ILC", "Microglia", "Neutrophils", "Tgd"), invert = FALSE)
+#CellChat.groups <- subset(all.cells, idents = c("B1", "B2", "pro-B cells", "CD8 T", "Th1", "Th17", "Th2", "Treg", "NK", "NKT", "Tgd", "DC1", "DC2", "pDC", "MDSC", "Monocytes", "Kupffer", "M1", "M2", "M1-like", "Microglia", "Basophils", "Eosinophils", "Granulocytes", "Neutrophils", "ILC", "Fibroblasts", "Hepatocytes"), invert = FALSE)
+
+library(ggplot2)
+library(Seurat)
+library(rhapsodykit)
+library(scuttle)
+
+##just adjust this section of code for whatever cell type-containing object generated and the rest just needs file output changed to the desired destination
+Idents(CDm.WDm.WDTm.cells) <- CDm.WDm.WDTm.cells@meta.data$orig.ident
+CD <- subset(CDm.WDm.WDTm.cells, idents = "Ctrl", invert = FALSE)
+TF <- subset(CDm.WDm.WDTm.cells, idents = "Pre-T", invert = FALSE)
+TB <- subset(CDm.WDm.WDTm.cells, idents = "Post-T", invert = FALSE)
+
+##first for CD
+CD$replicate <- unlist(lapply(names(CD$orig.ident), function(x) strsplit(x, split="_")[[1]][[1]]))
+head(CD$replicate)
+tail(CD$replicate)
+
+CD.sce <- as.SingleCellExperiment(CD)
+CD.sce <- aggregateAcrossCells(CD.sce, ids = colData(CD.sce)[,"replicate"])
+head(assay(CD.sce))
+colData(CD.sce)[,"replicate"]
+write.csv(assay(CD.sce), file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/Ctrl.Macrophages.counts.csv")
+
+##next with TF group
+TF$replicate <- unlist(lapply(names(TF$orig.ident), function(x) strsplit(x, split="_")[[1]][[1]]))
+head(TF$replicate)
+tail(TF$replicate)
+
+TF.sce <- as.SingleCellExperiment(TF)
+TF.sce <- aggregateAcrossCells(TF.sce, ids = colData(TF.sce)[,"replicate"])
+head(assay(TF.sce))
+colData(TF.sce)[,"replicate"]
+write.csv(assay(TF.sce), file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/PreT.Macrophages.counts.csv")
+
+##now last TB group
+TB$replicate <- unlist(lapply(names(TB$orig.ident), function(x) strsplit(x, split="_")[[1]][[1]]))
+head(TB$replicate)
+tail(TB$replicate)
+
+TB.sce <- as.SingleCellExperiment(TB)
+TB.sce <- aggregateAcrossCells(TB.sce, ids = colData(TB.sce)[,"replicate"])
+head(assay(TB.sce))
+colData(TB.sce)[,"replicate"]
+write.csv(assay(TB.sce), file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/PostT.Macrophages.counts.csv")
+
+##Part3: cleanup workspace and move on to DESeq2 Prep for IPA (Step 2 of IPA processing)
+library(tidyverse)
+library(DESeq2)
+
+CD.TB.counts <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/CtrlvPost-T.Macrophages.counts.csv", header = TRUE, sep = ",")
+CD.TF.counts <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/CtrlvPre-T.Macrophages.counts.csv", header = TRUE, sep = ",")
+TF.TB.counts <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/Pre-TvPost-T.Macrophages.counts.csv", header = TRUE, sep = ",")
+
+#CD.KvUnk.counts <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/FinalR Selected Cells/CTRL.Known.v.UnkCD4.counts.csv", header = TRUE, sep = ",")
+#TF.KvUnk.counts <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/FinalR Selected Cells/TF.Known.v.UnkCD4.counts.csv", header = TRUE, sep = ",")
+#TB.KvUnk.counts <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/FinalR Selected Cells/TB.Known.v.UnkCD4.counts.csv", header = TRUE, sep = ",")
+
+head(CD.TB.counts)
+head(CD.TF.counts)
+head(TF.TB.counts)
+
+CD.TB.counts$X[duplicated(CD.TB.counts$X)]
+CD.TF.counts$X[duplicated(CD.TF.counts$X)]
+TF.TB.counts$X[duplicated(TF.TB.counts$X)]
+
+which(duplicated(CD.TB.counts$X))
+which(duplicated(CD.TF.counts$X))
+which(duplicated(TF.TB.counts$X))
+
+CD.TB.counts$X[9519] <- "1-Mar_dup"
+CD.TB.counts$X[18441] <- "2-Mar_dup"
+CD.TF.counts$X[9519] <- "1-Mar_dup"
+CD.TF.counts$X[18441] <- "2-Mar_dup"
+TF.TB.counts$X[9519] <- "1-Mar_dup"
+TF.TB.counts$X[18441] <- "2-Mar_dup"
+
+which(duplicated(CD.TB.counts$X))
+which(duplicated(CD.TF.counts$X))
+which(duplicated(TF.TB.counts$X))
+
+row.names(CD.TB.counts) <- CD.TB.counts$X
+row.names(CD.TF.counts) <- CD.TF.counts$X
+row.names(TF.TB.counts) <- TF.TB.counts$X
+
+CD.TB.counts <- CD.TB.counts[,-1]
+CD.TF.counts <- CD.TF.counts[,-1]
+TF.TB.counts <- TF.TB.counts[,-1]
+
+colData.CDvTB <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/CtrlvPost-T.Macrophages.data.info.csv", header = TRUE, sep = ",", row.names = 1)
+colData.CDvTF <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/CtrlvPre-T.Macrophages.data.info.csv", header = TRUE, sep = ",", row.names = 1)
+colData.TFvTB <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/Pre-TvPost-T.Macrophages.data.info.csv", header = TRUE, sep = ",", row.names = 1)
+
+#colData.CD.KvUnk <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/FinalR Selected Cells/CTRL.Known.v.UnkCD4.data.info.csv", header = TRUE, sep = ",", row.names = 1)
+#colData.TF.KvUnk <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/FinalR Selected Cells/TF.Known.v.UnkCD4.data.info.csv", header = TRUE, sep = ",", row.names = 1)
+#colData.TB.KvUnk <- read.csv("D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/FinalR Selected Cells/TB.Known.v.UnkCD4.data.info.csv", header = TRUE, sep = ",", row.names = 1)
+
+View(colData.CDvTB)
+View(colData.CDvTF)
+View(colData.TFvTB)
+
+all(names(CD.TB.counts) %in% row.names(colData.CDvTB))
+all(names(CD.TF.counts) %in% row.names(colData.CDvTF))
+all(names(TF.TB.counts) %in% row.names(colData.TFvTB))
+
+all(names(CD.TB.counts) == row.names(colData.CDvTB))
+all(names(CD.TF.counts) == row.names(colData.CDvTF))
+all(names(TF.TB.counts) == row.names(colData.TFvTB))
+
+##construct DESeqDataSet object
+
+dds.CDvTB <- DESeqDataSetFromMatrix(countData = CD.TB.counts, colData = colData.CDvTB, design = ~ condition)
+dds.CDvTF <- DESeqDataSetFromMatrix(countData = CD.TF.counts, colData = colData.CDvTF, design = ~ condition)
+dds.TFvTB <- DESeqDataSetFromMatrix(countData = TF.TB.counts, colData = colData.TFvTB, design = ~ condition)
+
+dds.CDvTB
+dds.CDvTF
+dds.TFvTB
+##pre-filtering to remove rows with low gene counts
+##keep rows that have at least 3 reads total for smaller populations (use 10 reads for entire IC pop & CellChat.groups, and 3 for all others)
+
+keep.CDvTB <- rowSums(counts(dds.CDvTB)) >= 3
+dds.CDvTB <- dds.CDvTB[keep.CDvTB,]
+dds.CDvTB
+
+keep.CDvTF <- rowSums(counts(dds.CDvTF)) >= 3
+dds.CDvTF <- dds.CDvTF[keep.CDvTF,]
+dds.CDvTF
+
+keep.TFvTB <- rowSums(counts(dds.TFvTB)) >= 3
+dds.TFvTB <- dds.TFvTB[keep.TFvTB,]
+dds.TFvTB
+
+##run DESeq
+dds.CDvTB <- DESeq(dds.CDvTB)
+dds.CDvTF <- DESeq(dds.CDvTF)
+dds.TFvTB <- DESeq(dds.TFvTB)
+
+##Set up for the contrast function is the variable (condition), one to test (T1/high), and reference (C1/low)
+res.CDvTB <- results(dds.CDvTB, contrast = c("condition", "Post-T", "Ctrl"))
+res.CDvTF <- results(dds.CDvTF, contrast = c("condition", "Pre-T", "Ctrl"))
+res.TFvTB <- results(dds.TFvTB, contrast = c("condition", "Post-T", "Pre-T"))
+
+res.CDvTB
+res.CDvTF
+res.TFvTB
+##Explore Results 
+
+summary(res.CDvTB)
+summary(res.CDvTF)
+summary(res.TFvTB)
+
+write.csv(as.data.frame(res.CDvTB), file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/CtrlvPost-T.Macrophages.IPA.csv")
+write.csv(as.data.frame(res.CDvTF), file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/CtrlvPre-T.Macrophages.IPA.csv")
+write.csv(as.data.frame(res.TFvTB), file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/IPA/Liver Cell Patterns/Macrophages/Pre-TvPost-T.Macrophages.IPA.csv")
+##end of DESeq2 use on selected IC populations to compare differentially expressed genes across groups
+########################################################################################################################################################################
+##cleanup workspace, load in custom labeled data from near end of step 4, and assess functional profiles of key effector cell types and APCs
+# !nonICs.labeled <- readRDS("nonICs.customized.num.labels")
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##here is code to export saved files for reference, since we need to show every bit of data
+#github.com/satijalab/seurat/issues/427
+library(data.table)
+ICs.labeled <- ScaleData(ICs.labeled)
+View(ICs.labeled)
+ICs.labeled.Step5 <- as.data.frame(as.matrix(ICs.labeled@assays$RNA@scale.data))
+fwrite(x = ICs.labeled.Step5, row.names = TRUE, file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/FinalR IC Patterns Saved Files/Step5.ICslabeled.csv")
+##here is code to export saved reference file, but with key meta.data
+##github.com/satijalab/seurat/issues/4974
+library(dplyr)
+library(tibble)
+library(Seurat)
+export_df <- ICs.labeled@meta.data %>%
+  rownames_to_column("barcodes") %>%
+  select(barcodes, scSorter.singleR.labels, orig.ident)
+write.csv(export_df, "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/FinalR IC Patterns Saved Files/Step5.ICslabeled.metadata.csv")
+##hold on to non.ICs in case we want to look at functional aspects of those cells too, as they are part of the microenvironment too!
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+ICs.labeled <- readRDS("ICs.customized.labels")
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$orig.ident
+new.origident.levels <- c("Ctrl", "Pre-T", "Post-T")
+ICs.labeled@meta.data$orig.ident <- factor(x = ICs.labeled@meta.data$orig.ident, levels = new.origident.levels)
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$scSorter.singleR.labels
+new.label.levels <- c("B1", "B2", "Basophils", "CD8 T", "DC1", "DC2", "Eosinophils", "Granulocytes", "ILC", "Kupffer", "M1", "M2", "MDSC", "Microglia", "Monocytes", "Neutrophils", "NK", "NKT", "pDC", "pro-B cells", "Tgd", "Th1", "Th17", "Th2", "Treg", "Unk.B", "Unk.CD4", "Unk.DC", "M1-like", "Unk.T")
+ICs.labeled@meta.data$scSorter.singleR.labels <- factor(x = ICs.labeled@meta.data$scSorter.singleR.labels, levels = new.label.levels)
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$scSorter.singleR.labels
+ICs.labeled <- subset(ICs.labeled, idents = c("B1", "B2", "Basophils", "CD8 T", "DC1", "DC2", "Eosinophils", "Granulocytes", "ILC", "Kupffer", "M1", "M2", "MDSC", "Microglia", "Monocytes", "Neutrophils", "NK", "NKT", "pDC", "pro-B cells", "Tgd", "Th1", "Th17", "Th2", "Treg", "M1-like"), invert = FALSE)
+new.label.levels2 <- c("B1", "B2", "Basophils", "CD8 T", "DC1", "DC2", "Eosinophils", "Granulocytes", "ILC", "Kupffer", "M1", "M2", "MDSC", "Microglia", "Monocytes", "Neutrophils", "NK", "NKT", "pDC", "pro-B cells", "Tgd", "Th1", "Th17", "Th2", "Treg", "M1-like")
+ICs.labeled@meta.data$scSorter.singleR.labels <- factor(x = ICs.labeled@meta.data$scSorter.singleR.labels, levels = new.label.levels2)
+
+#!new.colors.IC <- DiscretePalette(n = 30, "polychrome")
+xtra.colors.IC <- c("darksalmon", "aquamarine", "deepskyblue3", "deeppink", "deeppink3", "aquamarine3", "chocolate", "blue4", "blueviolet", "brown2", "chartreuse", "cyan", "burlywood", "darkorchid4", "burlywood4", "cadetblue2",  "brown4", "chartreuse3", "antiquewhite4", "chocolate4", "cornflowerblue", "darkcyan", "darkgoldenrod1", "blue", "black", "darkorange3")
+PCA.genes <- read.csv("D:/Singulomics Data/RNAseq_Analysis/Excel Files/IC Patterns/Genes for PCA.csv", header = TRUE, sep = ",")
+
+ICs.labeled <- NormalizeData(ICs.labeled, normalization.method = "LogNormalize", scale.factor = 10000, verbose = F)
+ICs.labeled <- FindVariableFeatures(ICs.labeled, selection.method = "vst", nfeatures = 3000, verbose = F)
+ICs.labeled <- ScaleData(ICs.labeled)
+ICs.labeled <- RunPCA(ICs.labeled, features = rownames(PCA.genes$Genes))
+DimPlot(ICs.labeled, cols = xtra.colors.IC, reduction = "pca", pt.size = 0.9, group.by = "scSorter.singleR.labels") + labs(title = NULL) + theme(legend.text = element_text(size = 9), legend.title = element_text(size = 8))
+
+ICs.labeled <- FindNeighbors(ICs.labeled, verbose = FALSE)
+ICs.labeled <- FindClusters(ICs.labeled, resolution = 0.4, verbose = FALSE)
+ICs.labeled <- RunUMAP(ICs.labeled, dims = 1:20, reduction = "pca")
+options(ggrepel.max.overlaps = Inf)
+
+DimPlot(ICs.labeled, cols = xtra.colors.IC, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", label = TRUE, label.size = 3, repel = TRUE) + labs(title = NULL) + NoLegend()
+DimPlot(ICs.labeled, cols = xtra.colors.IC, reduction = "umap", pt.size = 0.9, group.by = "scSorter.singleR.labels", split.by = "orig.ident", label = TRUE, label.size = 3, repel = TRUE, ncol = 3) + labs(title = NULL)
+##first, global cyto/chemo analysis of major IC populations
+global.kines <- c("Ifng", "Tnf", "Il1a", "Il1b", "Il2", "Il4", "Il5", "Il6", "Il7", "Il10", "Il12a", "Il12b", "Il15", "Il16", "Il17b", "Il17c", "Il17d", "Il17f", "Il18", "Il23a", "Il27", "Il33", "Il34", "Lta", "Ltb", "Csf1", "Ccl2", "Ccl3", "Ccl4", "Ccl5", "Ccl6", "Ccl9", "Ccl24", "Ccl25", "Ccl27a", "Cxcl1", "Cxcl2", "Cxcl9", "Cxcl10", "Cxcl13", "Cxcl12", "Cxcl17", "Cxcl16", "Cxcl14", "Epo", "Vegfa", "Vegfb", "Vegfc", "Vegfd", "Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd")
+custom.kines <- c("Ifng", "Tnf", "Il1a", "Il1b", "Il10", "Il15", "Il16", "Il17b", "Il17c", "Il17d", "Il17f", "Il18", "Il18r1", "Il18rap", "Lta", "Ltb", "Csf1", "Ccl2", "Ccl3", "Ccl4", "Ccl5", "Ccr5", "Ccl6", "Cxcl9", "Cxcl10", "Cxcl16", "Cxcr6", "Lgals9", "Ptprc", "Cd44", "Ighm", "Havcr2", "Tgfb1", "Tgfb2", "Tgfbr1", "Tgfbr2", "Acvr1", "Acvr1b")
+ICs.labeled <- ScaleData(object = ICs.labeled, features = rownames(ICs.labeled))
+
+sum(global.kines %in% rownames(GetAssayData(ICs.labeled, slot = 'scale.data')))
+
+library(viridis)
+
+FeaturePlot(ICs.labeled, features = "Il1a", split.by = "orig.ident", ncol = 3)
+FeaturePlot(ICs.labeled, features = "Il1b", split.by = "orig.ident", ncol = 3)
+FeaturePlot(ICs.labeled, features = "Il12a", split.by = "orig.ident", ncol = 3)
+
+DoHeatmap(ICs.labeled, features = global.kines, group.by = "orig.ident", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 11, face = "bold"))
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$scSorter.singleR.labels
+MPs <- subset(ICs.labeled, idents = c("M1", "M2", "Kupffer", "M1-like"), invert = FALSE)
+
+MPs <- ScaleData(object = MPs, features = rownames(MPs))
+
+DoHeatmap(MPs, features = c("Adgre1", "Arg1", "Csf1r", "Cd74", "H2-Aa", "Tnf", "Ccr2", "Ccr5", "Cxcl9", "Cxcl10", "Cxcl12", "Cxcl13", "Msr1", "Tgfb1", "Itgad", "Itgb2"), group.by = "orig.ident", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 16, face = "bold"))
+
+Idents(MPs) <- MPs@meta.data$orig.ident
+MP.Ctrl <- subset(MPs, idents = "Ctrl", invert = FALSE)
+MP.PreT <- subset(MPs, idents = "Pre-T", invert = FALSE)
+MP.PostT <- subset(MPs, idents = "Post-T", invert = FALSE)
+
+#Idents(MPs) <- MPs@meta.data$scSorter.singleR.labels
+#Unk.MP.markers <- FindMarkers(MPs, ident.1 = "Unk.MP", ident.2 = c("Kupffer", "M1", "M2"), logfc.threshold = log(2), min.pct = 0.5)
+#head(Unk.MP.markers)
+#write.csv(Unk.MP.markers, file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/Unknown Cell Type DFE genes/Unk.MP.DFEgenes.minpct0.5.csv")
+
+DoHeatmap(MP.Ctrl, features = c("Adgre1", "H2-Aa", "Tgfb1", "Cd86", "Tnf", "Itgad", "Arg1", "Mrc1", "Clec4f", "Vsig4"), group.by = "Predicted_Type", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 16, face = "bold"))
+DoHeatmap(MP.PreT, features = c("Adgre1", "H2-Aa", "Tgfb1", "Cd86", "Tnf", "Itgad", "Arg1", "Mrc1", "Clec4f", "Vsig4"), group.by = "Predicted_Type", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 16, face = "bold"))
+DoHeatmap(MP.PostT, features = c("Adgre1", "H2-Aa", "Tgfb1", "Cd86", "Tnf", "Itgad", "Arg1", "Mrc1", "Clec4f", "Vsig4"), group.by = "Predicted_Type", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 16, face = "bold"))
+##after normalization/visualization, isolate effector and APC cells of interst to interrogate relevant functional genes 
+Idents(ICs.labeled) <- ICs.labeled@meta.data$singleR.labels
+singleR.Tcells <- subset(ICs.labeled, idents = "T cells", invert = FALSE)
+table(singleR.Tcells@meta.data$orig.ident)
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$scSorter.singleR.labels
+CD4T <- subset(ICs.labeled, idents = c("Th1", "Th17", "Th2", "Treg", "Unk.CD4"), invert = FALSE)
+table(CD4T@meta.data$orig.ident)
+
+CD8T <- subset(ICs.labeled, idents = "CD8 T", invert = FALSE)
+table(CD8T@meta.data$orig.ident)
+
+#Unk.T <- subset(ICs.labeled, idents = "Unk.T", invert = FALSE)
+#table(Unk.T@meta.data$orig.ident)
+#Unk.T <- ScaleData(object = Unk.T, features = rownames(Unk.T))
+#DoHeatmap(Unk.T, features = T.global.kines, group.by = "orig.ident", size = 4) + scale_fill_viridis() + theme(text = element_text(size = 11, face = "bold"))
+##now write in genes to assess within heatmap for each cell type to compare in samples
+Tcell.kines <- c("Ifng", "Tnf", "Il4", "Il5", "Il10", "Il17f", "Il17c", "Il17d", "Il33", "Il2", "Il7", "Il1a", "Il1b", "Tgfb1", "Prf1", "Gzmb", "Fas", "Fasl", "Tnfsf10", "Pdcd1", "Cd274", "Cd40", "Cd40lg", "Cd69", "Ifngr1", "Ifngr2", "Cd28", "Ctla4", "Bhlhe40", "Prdm1", "Zfp683", "Havcr2", "Tnfrsf14", "Lta", "Ltb")
+T.global.kines <- c("Cd3e", "Cd4", "Cd8a", "Sell", "Cd44", "Cd28", "Ccr7", "Ltb", "Thy1", "Ifng", "Tnf", "Il1a", "Il1b", "Il2", "Il4", "Il5", "Il6", "Il7", "Il10", "Il12a", "Il12b", "Il15", "Il16", "Il17b", "Il17c", "Il17d", "Il17f", "Il18", "Il23a", "Il27", "Il33", "Il34", "Lta", "Ltb", "Csf1", "Ccl2", "Ccl3", "Ccl4", "Ccl5", "Ccl6", "Ccl9", "Ccl24", "Ccl25", "Ccl27a", "Cxcl1", "Cxcl2", "Cxcl9", "Cxcl10", "Cxcl13", "Cxcl12", "Cxcl17", "Cxcl16", "Cxcl14", "Epo", "Vegfa", "Vegfb", "Vegfc", "Vegfd", "Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd")
+Tcell.activ <- c("Tnf", "Ifng", "Il10", "Il2", "Tgfb1", "Prf1", "Gzmb", "Tnfsf10", "Lta", "Ltb", "Il2ra", "Cd44", "Sell")
+Tcell.inhib <- c("Fas", "Fasl", "Pdcd1", "Cd274", "Pdcd1lg2","Havcr2", "Lgals9", "Btla", "Tnfrsf14", "Tnfsf14", "Tnfrsf4", "Tnfsf4", "Cd28", "Ctla4")
+
+library(viridis)
+##color = viridis::plasma(100)
+CD8T.kines <- c("Ifng", "Tnf", "Il4", "Il5", "Il10", "Il17f", "Il17c", "Il17d", "Il33", "Il2", "Il7", "Il1a", "Il1b", "Tgfb1", "Prf1", "Gzmb", "Fas", "Fasl", "Tnfsf10", "Pdcd1", "Cd274", "Cd40", "Cd40lg", "Cd69", "Ifngr1", "Ifngr2", "Cd28", "Ctla4", "Bhlhe40", "Prdm1", "Zfp683", "Cxcr3", "Cxcr6")
+
+singleR.Tcells <- ScaleData(object = singleR.Tcells, features = rownames(singleR.Tcells))
+CD4T <- ScaleData(object = CD4T, features = rownames(CD4T))
+CD8T <- ScaleData(object = CD8T, features = rownames(CD8T))
+
+sum(Tcell.kines %in% rownames(GetAssayData(singleR.Tcells, slot = 'scale.data')))
+sum(Tcell.kines %in% rownames(GetAssayData(CD4T, slot = 'scale.data')))
+sum(Tcell.kines %in% rownames(GetAssayData(CD8T, slot = 'scale.data')))
+
+DoHeatmap(singleR.Tcells, features = Tcell.kines, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() 
+DoHeatmap(CD4T, features = Tcell.kines, group.by = "orig.ident", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9, face = "bold"))
+DoHeatmap(CD8T, features = Tcell.kines, group.by = "orig.ident", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9, face = "bold"))
+
+DoHeatmap(CD4T, features = Tcell.activ, group.by = "orig.ident", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9, face = "bold"))
+DoHeatmap(CD4T, features = Tcell.inhib, group.by = "orig.ident", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9, face = "bold"))
+
+DoHeatmap(CD8T, features = Tcell.activ, group.by = "orig.ident", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9, face = "bold"))
+DoHeatmap(CD8T, features = Tcell.inhib, group.by = "orig.ident", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9, face = "bold"))
+
+##now do the same for NK and NKT cells
+Idents(ICs.labeled) <- ICs.labeled@meta.data$singleR.labels
+singleR.NK <- subset(ICs.labeled, idents = "NK cells", invert = FALSE)
+table(singleR.NK@meta.data$orig.ident)
+
+singleR.NKT <- subset(ICs.labeled, idents = "NKT", invert = FALSE)
+table(singleR.NKT@meta.data$orig.ident)
+
+singleR.NK <- ScaleData(object = singleR.NK, features = rownames(singleR.NK))
+singleR.NKT <- ScaleData(object = singleR.NKT, features = rownames(singleR.NKT))
+
+NKT.kines <- c("Ifng", "Tnf", "Il4", "Il5", "Il10", "Il15", "Il17c", "Il33", "Il2", "Il7", "Il1a", "Il1b", "Tgfb1", "Prf1", "Gzmb", "Fas", "Fasl", "Tnfsf10", "Pdcd1", "Cd274", "Cd40", "Cd40lg", "Cd69", "Ifngr1", "Ifngr2", "Il15ra", "Bcl2l1", "Bcl2", "Mcl1", "Klrb1c", "Klrk1", "Ncr1", "Klrd1", "Klra1", "Klra2", "Klra3", "Klra4", "Klra5", "Klra6", "Klra7", "Klra8", "Klra9", "Klra10")
+
+sum(NKT.kines %in% rownames(GetAssayData(singleR.NK, slot = 'scale.data')))
+sum(NKT.kines %in% rownames(GetAssayData(singleR.NKT, slot = 'scale.data')))
+
+DoHeatmap(singleR.NK, features = NKT.kines, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis()
+DoHeatmap(singleR.NKT, features = NKT.kines, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis()
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##now also do for helper T cells (all isolated into CD4T)
+Tcell.kines <- c("Ifng", "Tnf", "Il4", "Il5", "Il10", "Il17f", "Il17c", "Il17d", "Il33", "Il2", "Il7", "Il1a", "Il1b", "Tgfb1", "Prf1", "Gzmb", "Fas", "Fasl", "Tnfsf10", "Pdcd1", "Cd274", "Cd40", "Cd40lg", "Cd69", "Ifngr1", "Ifngr2", "Cd28", "Ctla4", "Bhlhe40", "Prdm1", "Zfp683", "Havcr2", "Tnfrsf14", "Lta", "Ltb")
+#Tcell.kines2 <- c("Ifng", "Tnf", "Il4", "Il5", "Il10", "Il17f", "Il17c", "Il17d", "Il33", "Il2", "Il7", "Il1a", "Il1b", "Tgfb1", "Prf1", "Gzma", "Gzmb", "Fas", "Fasl", "Tnfsf10", "Pdcd1", "Cd274", "Cd40", "Cd40lg", "Cd69", "Cd28", "Ctla4", "Bhlhe40", "Prdm1", "Zfp683", "Havcr2", "Tnfrsf14", "Lta", "Ltb", "Il2ra", "Sell", "Cd44", "Tbx21", "Gata3", "Rorc", "Foxp3", "Bcl6", "Cxcr3", "Ccr6", "Ccr4", "Cxcr5", "Ccr7")
+Tcell.check <- c("Sell", "Cd44", "Cd69", "Cd28", "Ccr7", "Ltb", "Il2", "Ctla4", "Ifng", "Tnf", "Gzmb", "Prf1", "Fasl", "Tnfsf10", "Il10", "Tgfb1")
+Tcell.TF.cyto.analysis <- c("Tbx21", "Gata3", "Rorc", "Foxp3", "Bcl6", "Pdcd1", "Cd69", "Ctla4", "Il2ra", "Ifng", "Tnf", "Il1a", "Il1b", "Il2", "Il4", "Il5", "Il6", "Il7", "Il10", "Il12a", "Il12b", "Il15", "Il16", "Il17b", "Il17c", "Il17d", "Il17f", "Il18", "Il23a", "Il27", "Il33", "Il34", "Lta", "Tnfsf14" ,"Tnfrsf14")
+Tcell.chemo.analysis <- c("Csf1", "Ccl2", "Ccl3", "Ccl4", "Ccl5", "Ccl6", "Ccl9", "Ccl24", "Ccl25", "Ccl27a", "Cxcl1", "Cxcl2", "Cxcl9", "Cxcl10", "Cxcl13", "Cxcl12", "Cxcl17", "Cxcl16", "Cxcl14", "Epo", "Vegfa", "Vegfb", "Vegfc", "Vegfd", "Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd")
+
+Th1 <- subset(CD4T, idents = "Th1", invert = FALSE)
+table(Th1@meta.data$orig.ident)
+Th17 <- subset(CD4T, idents = "Th17", invert = FALSE)
+table(Th17@meta.data$orig.ident)
+Th2 <- subset(CD4T, idents = "Th2", invert = FALSE)
+table(Th2@meta.data$orig.ident)
+Treg <- subset(CD4T, idents = "Treg", invert = FALSE)
+table(Treg@meta.data$orig.ident)
+Unk.CD4 <- subset(CD4T, idents = "Unk.CD4", invert = FALSE)
+table(Unk.CD4@meta.data$orig.ident)
+
+Th1 <- ScaleData(object = Th1, features = rownames(Th1))
+Th17 <- ScaleData(object = Th17, features = rownames(Th17))
+Th2 <- ScaleData(object = Th2, features = rownames(Th2))
+Treg <- ScaleData(object = Treg, features = rownames(Treg))
+Unk.CD4 <- ScaleData(object = Unk.CD4, features = rownames(Unk.CD4))
+
+sum(Tcell.kines %in% rownames(GetAssayData(Th1, slot = 'scale.data')))
+sum(Tcell.kines %in% rownames(GetAssayData(Th17, slot = 'scale.data')))
+sum(Tcell.kines %in% rownames(GetAssayData(Th2, slot = 'scale.data')))
+sum(Tcell.kines %in% rownames(GetAssayData(Treg, slot = 'scale.data')))
+sum(Tcell.kines %in% rownames(GetAssayData(Unk.CD4, slot = 'scale.data')))
+
+DoHeatmap(Th1, features = Tcell.kines, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9, face = "bold"))
+DoHeatmap(Th17, features = Tcell.kines, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9, face = "bold"))
+DoHeatmap(Th2, features = Tcell.kines, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9, face = "bold"))
+DoHeatmap(Treg, features = Tcell.kines, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9, face = "bold"))
+DoHeatmap(Unk.CD4, features = Tcell.check, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 14, face = "bold"))
+
+##DFE on Unknown.CD4 to figure out what they may be in relation to other helper T cells
+Unk.CD4.markers <- FindMarkers(ICs.labeled, ident.1 = "Unk.CD4", ident.2 = c("Th1", "Th17", "Th2", "Treg"))
+head(Unk.CD4.markers)
+Unk.CD4.markers2 <- FindMarkers(ICs.labeled, ident.1 = "Unk.CD4", ident.2 = c("Th1", "Th17", "Th2", "Treg"), min.pct = 0.5)
+head(Unk.CD4.markers2)
+write.csv(Unk.CD4.markers, file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/Unknown Cell Type DFE genes/Unk.CD4.DFE.genes.csv")
+write.csv(Unk.CD4.markers2, file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/Unknown Cell Type DFE genes/Unk.CD4.DFE.genes.minpct.csv")
+
+##also need to assess macrophages 
+MP.kines <- c("Ifng", "Tnf", "Il4", "Il5", "Il6", "Il10", "Il18", "Il33", "Il1a", "Il1b", "Tgfb1", "Prf1", "Gzmb", "Fas", "Fasl", "Tnfsf10", "Pdcd1", "Cd274", "Pdcd1lg2", "Cd40", "Cd40lg", "Ifngr1", "Ifngr2", "Ctla4", "Cd74", "Cd80", "Cd86",  "Il4i1")
+MP.kines2 <- c("Vegfa", "Vegfb", "Vegfc", "Vegfd", "Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd", "Csf1", "Cxcl9", "Cxcl10", "Nox1", "Nox3", "Arg1", "Ccl2", "Ccl3", "Ccl5", "Lgals9", "Trem1", "Trem2", "Ccr2", "Ccr5", "Csf1r", "Ido1", "Ido2")
+MP.all <- c("Ifng", "Tnf", "Il4", "Il5", "Il6", "Il10", "Il15", "Il18", "Il33", "Il1a", "Il1b", "Tgfb1", "Prf1", "Gzmb", "Fas", "Fasl", "Tnfsf10", "Pdcd1", "Cd274", "Pdcd1lg2", "Cd40", "Cd40lg", "Ifngr1", "Ifngr2", "Ctla4", "Cd74", "Cd80", "Cd86",  "Il4i1", "Vegfa", "Vegfb", "Vegfc", "Vegfd", "Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd", "Csf1", "Cxcl9", "Cxcl10", "Nox1", "Nox3", "Arg1", "Arg2", "Ccl2", "Ccl3", "Ccl5", "Lgals9", "Trem1", "Trem2", "Ccr2", "Ccr5", "Csf1r", "Ido1", "Ido2")
+MP.global.and.markers <- c("Nos2", "Cd86", "Arg1", "Mrc1", "Clec4f", "Vsig4", "Ifng", "Tnf", "Il1a", "Il1b", "Il2", "Il4", "Il5", "Il6", "Il7", "Il10", "Il12a", "Il12b", "Il15", "Il16", "Il17b", "Il17c", "Il17d", "Il17f", "Il18", "Il23a", "Il27", "Il33", "Il34", "Lta", "Ltb", "Csf1", "Ccl2", "Ccl3", "Ccl4", "Ccl5", "Ccl6", "Ccl9", "Ccl24", "Ccl25", "Ccl27a", "Cxcl1", "Cxcl2", "Cxcl9", "Cxcl10", "Cxcl13", "Cxcl12", "Cxcl17", "Cxcl16", "Cxcl14", "Epo", "Vegfa", "Vegfb", "Vegfc", "Vegfd", "Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd")
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$scSorter.singleR.labels
+MP <- subset(ICs.labeled, idents = c("Kupffer","M1", "M2"), invert = FALSE)
+table(MP@meta.data$orig.ident)
+
+Kupffer <- subset(ICs.labeled, idents = "Kupffer", invert = FALSE)
+table(Kupffer@meta.data$orig.ident)
+M1 <- subset(ICs.labeled, idents = "M1", invert = FALSE)
+table(M1@meta.data$orig.ident)
+M2 <- subset(ICs.labeled, idents = "M2", invert = FALSE)
+table(M2@meta.data$orig.ident)
+
+Kupffer <- ScaleData(object = Kupffer, features = rownames(Kupffer))
+M1 <- ScaleData(object = M1, features = rownames(M1))
+M2 <- ScaleData(object = M2, features = rownames(M2))
+
+sum(MP.all %in% rownames(GetAssayData(Kupffer, slot = 'scale.data')))
+sum(MP.all %in% rownames(GetAssayData(M1, slot = 'scale.data')))
+sum(MP.all %in% rownames(GetAssayData(M2, slot = 'scale.data')))
+
+DoHeatmap(Kupffer, features = MP.all, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9))
+DoHeatmap(M1, features = MP.all, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9))
+DoHeatmap(M2, features = MP.all, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9))
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##lets assess other APC groups too
+library(viridis)
+APC.kines <- c("Ifng", "Tnf", "Il4", "Il5", "Il6", "Il10", "Il18", "Il33", "Il1a", "Il1b", "Tgfb1", "Prf1", "Gzmb", "Fas", "Fasl", "Tnfsf10", "Pdcd1", "Cd274", "Pdcd1lg2", "Cd40", "Cd40lg", "Ifngr1", "Ifngr2", "Ctla4", "Cd74", "Cd80", "Cd86",  "Il4i1", "Csf1", "Cxcl9", "Cxcl10", "Nox1", "Nox3", "Arg1", "Arg2", "Ccl2", "Ccl3", "Ccl5", "Lgals9", "Trem1", "Trem2", "Ccr2", "Ccr5", "Csf1r", "Ido1", "Ido2")
+DC.global.and.markers <- c("Bst2", "Ly6c2", "Siglech", "Irf8", "Cd8a", "Itgae", "Itgam", "Sirpa", "Clec4a4", "Cd74", "H2-Aa", "Ifng", "Tnf", "Il1a", "Il1b", "Il2", "Il4", "Il5", "Il6", "Il7", "Il10", "Il12a", "Il12b", "Il15", "Il16", "Il17b", "Il17c", "Il17d", "Il17f", "Il18", "Il23a", "Il27", "Il33", "Il34", "Lta", "Ltb", "Csf1", "Ccl2", "Ccl3", "Ccl4", "Ccl5", "Ccl6", "Ccl9", "Ccl24", "Ccl25", "Ccl27a", "Cxcl1", "Cxcl2", "Cxcl9", "Cxcl10", "Cxcl13", "Cxcl12", "Cxcl17", "Cxcl16", "Cxcl14", "Epo", "Vegfa", "Vegfb", "Vegfc", "Vegfd", "Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd")
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$scSorter.singleR.labels
+Bcells <- subset(ICs.labeled, idents = c("B1", "B2", "Unk.B"), invert = FALSE)
+table(Bcells@meta.data$orig.ident)
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$singleR.labels
+DC <- subset(ICs.labeled, idents = c("DC"), invert = FALSE)
+table(DC@meta.data$orig.ident)
+
+Bcells <- ScaleData(object = Bcells, features = rownames(Bcells))
+DC <- ScaleData(object = DC, features = rownames(DC))
+
+sum(APC.kines %in% rownames(GetAssayData(Bcells, slot = 'scale.data')))
+sum(APC.kines %in% rownames(GetAssayData(DC, slot = 'scale.data')))
+
+DoHeatmap(Bcells, features = Tcell.Ltb.pos, group.by = "orig.ident", size = 4) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 14, face = "bold"))
+DoHeatmap(Bcells, features = APC.kines, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 10, face = "bold"))
+DoHeatmap(DC, features = APC.kines, group.by = "orig.ident", size = 3) + NoLegend() + scale_fill_viridis() + theme(text = element_text(size = 9))
+
+Idents(DC) <- DC@meta.data$orig.ident
+DC.Ctrl <- subset(DC, idents = "Ctrl", invert = FALSE)
+DC.PreT <- subset(DC, idents = "Pre-T", invert = FALSE)
+DC.PostT <- subset(DC, idents = "Post-T", invert = FALSE)
+
+DoHeatmap(DC.Ctrl, features = DC.global.and.markers, group.by = "scSorter.singleR.labels", size = 4) + scale_fill_viridis() + theme(text = element_text(size = 10, face = "bold"))
+DoHeatmap(DC.PreT, features = DC.global.and.markers, group.by = "scSorter.singleR.labels", size = 4) + scale_fill_viridis() + theme(text = element_text(size = 10, face = "bold"))
+DoHeatmap(DC.PostT, features = DC.global.and.markers, group.by = "scSorter.singleR.labels", size = 4) + scale_fill_viridis() + theme(text = element_text(size = 10, face = "bold"))
+
+##heatmap of each sample and their B cell subsets for Unk.B classification with our observations
+Bcell.global.and.markers <- c("Spn", "Cd5", "Fcer2a", "Ighd", "Ltb", "Ighm", "Cd79a", "Cd79b", "Cd19", "Ifng", "Tnf", "Il1a", "Il1b", "Il2", "Il4", "Il5", "Il6", "Il7", "Il10", "Il12a", "Il12b", "Il15", "Il16", "Il17b", "Il17c", "Il17d", "Il17f", "Il18", "Il23a", "Il27", "Il33", "Il34", "Lta", "Csf1", "Ccl2", "Ccl3", "Ccl4", "Ccl5", "Ccl6", "Ccl9", "Ccl24", "Ccl25", "Ccl27a", "Cxcl1", "Cxcl2", "Cxcl9", "Cxcl10", "Cxcl13", "Cxcl12", "Cxcl17", "Cxcl16", "Cxcl14", "Epo", "Vegfa", "Vegfb", "Vegfc", "Vegfd", "Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd")
+
+Idents(Bcells) <- Bcells@meta.data$orig.ident
+Ctrl.B <- subset(Bcells, idents = "Ctrl", invert = FALSE)
+PreT.B <- subset(Bcells, idents = "Pre-T", invert = FALSE)
+PostT.B <- subset(Bcells, idents = "Post-T", invert = FALSE)
+
+DoHeatmap(Ctrl.B, features = Bcell.global.and.markers, group.by = "scSorter.singleR.labels", size = 4) + scale_fill_viridis() + theme(text = element_text(size = 10, face = "bold"))
+DoHeatmap(PreT.B, features = Bcell.global.and.markers, group.by = "scSorter.singleR.labels", size = 4) + scale_fill_viridis() + theme(text = element_text(size = 10, face = "bold"))
+DoHeatmap(PostT.B, features = Bcell.global.and.markers, group.by = "scSorter.singleR.labels", size = 4) + scale_fill_viridis() + theme(text = element_text(size = 10, face = "bold"))
+
+Idents(Bcells) <- Bcells@meta.data$scSorter.singleR.labels
+Unk.B.markers <- FindMarkers(Bcells, ident.1 = "Unk.B", ident.2 = c("B1", "B2"), logfc.threshold = log(2), min.pct = 0.5)
+head(Unk.B.markers)
+write.csv(Unk.B.markers, file = "D:/Singulomics Data/RNAseq_Analysis/OUTFILE/Unknown Cell Type DFE genes/Unk.B.DFEgenes.minpct0.5.csv")
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##check out some hepatocytes 
+nonICs.labeled <- readRDS("nonICs.customized.labels")
+
+Idents(nonICs.labeled) <- nonICs.labeled@meta.data$orig.ident
+new.origident.levels <- c("Ctrl", "Pre-T", "Post-T")
+nonICs.labeled@meta.data$orig.ident <- factor(x = nonICs.labeled@meta.data$orig.ident, levels = new.origident.levels)
+
+Idents(nonICs.labeled) <- nonICs.labeled@meta.data$singleR.labels
+Hepatocyte <- subset(nonICs.labeled, idents = "Hepatocytes", invert = FALSE)
+table(Hepatocyte@meta.data$orig.ident)
+
+Hep.kines <- c("Ifng", "Tnf", "Il1a", "Il1b", "Il2", "Il4", "Il5", "Il6", "Il7", "Il10", "Il12a", "Il12b", "Il15", "Il16", "Il17b", "Il17c", "Il17d", "Il17f", "Il18", "Il23a", "Il27", "Il33", "Il34", "Csf1", "Ccl2", "Ccl3", "Ccl4", "Ccl5", "Ccl6", "Ccl9", "Ccl24", "Ccl25", "Ccl27a", "Cxcl1", "Cxcl2", "Cxcl9", "Cxcl10", "Cxcl13", "Cxcl12", "Cxcl17", "Cxcl16", "Cxcl14", "Epo", "Vegfa", "Vegfb", "Vegfc", "Vegfd", "Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd", "Tgfb1", "Fas", "Fasl", "Tnfsf10", "Pdcd1", "Cd274", "Pdcd1lg2", "Cd40", "Cd40lg", "Ifngr1", "Ifngr2", "Cd74", "Cd80", "Cd86",  "Il4i1", "Arg1", "Arg2", "Lgals9", "Ido1", "Ido2", "Afp", "Alb", "Hnf4a", "Ltbr", "Lta", "Ltb", "Tnfsf14" ,"Tnfrsf14", "Cxcr5")
+Hep.IC.interaxns <- c("Hnf4a", "Hgfac", "Slc38a4", "Hpx", "Serpina1a", "Alb", "Ciita", "Cd74", "H2-Aa", "Tnfrsf1a", "Tnfrsf1b", "Cd274", "Fas", "Tnfrsf14", "Tnfsf14", "Lgals9")
+Hepatocyte <- ScaleData(object = Hepatocyte, features = rownames(Hepatocyte))
+
+sum(Hep.kines %in% rownames(GetAssayData(Hepatocyte, slot = 'scale.data')))
+
+DoHeatmap(Hepatocyte, features = Hep.IC.interaxns, group.by = "orig.ident", size = 4) + scale_fill_viridis() + theme(text = element_text(size = 11, face = "bold"))
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##End of STEP5
+##REMEMBER TO CLEAR AND CLEANUP WORKSPACE WHEN POSSIBLE
+###############################################################################################################################################################################
+##STEP6: Employing CellChat to Assess the intercellular communication networks we see between different cell populations in the three groups (Ctrl, Pre-T, Post-T)
+###############################################################################################################################################################################
+library(CellChat)
+library(patchwork)
+options(stringsAsFactors = FALSE)
+##these packages are only needed if generating 'River Pattern Plots'
+#library(NMF)
+#library(ggalluvial)
+library(Seurat)
+
+##in initial analysis try only using immune cells, in secondary and actual analyses use both immune and non-immune cells from SingleR annotated cells or those with subsets
+##load in non-IC data here to merge with other to see how non-immune cells and immune cells may be interacting in the microenvironment
+nonICs.labeled <- readRDS("nonICs.customized.labels")
+
+Idents(nonICs.labeled) <- nonICs.labeled@meta.data$orig.ident
+new.origident.levels <- c("Ctrl", "Pre-T", "Post-T")
+nonICs.labeled@meta.data$orig.ident <- factor(x = nonICs.labeled@meta.data$orig.ident, levels = new.origident.levels)
+
+Idents(nonICs.labeled) <- nonICs.labeled@meta.data$singleR.labels
+nonIC <- subset(nonICs.labeled, idents = c("Hepatocytes", "Fibroblasts"), invert = FALSE)
+table(nonIC@meta.data$orig.ident)
+
+Idents(nonIC) <- nonIC@meta.data$orig.ident
+nonIC.Ctrl <- subset(nonIC, idents = "Ctrl", invert = FALSE)
+nonIC.PreT <- subset(nonIC, idents = "Pre-T", invert = FALSE)
+nonIC.PostT <- subset(nonIC, idents = "Post-T", invert = FALSE)
+
+##load in immune cell data
+ICs.labeled <- readRDS("ICs.customized.labels")
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$orig.ident
+new.origident.levels <- c("Ctrl", "Pre-T", "Post-T")
+ICs.labeled@meta.data$orig.ident <- factor(x = ICs.labeled@meta.data$orig.ident, levels = new.origident.levels)
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$scSorter.singleR.labels
+#Idents(ICs.labeled) <- ICs.labeled@meta.data$singleR.labels
+ICs.labeled <- subset(ICs.labeled, idents = c("B1", "B2", "Basophils", "CD8 T", "DC1", "DC2", "Eosinophils", "Granulocytes", "ILC", "Kupffer", "M1", "M2", "MDSC", "Microglia", "Monocytes", "Neutrophils", "NK", "NKT", "pDC", "pro-B cells", "Tgd", "Th1", "Th17", "Th2", "Treg", "M1-like"), invert = FALSE)
+#ICs.labeled <- subset(ICs.labeled, idents = c("B cells", "B cells, pro", "Basophils", "DC", "Eosinophils", "Granulocytes", "ILC", "Macrophages", "Microglia", "Monocytes", "Neutrophils", "NK cells", "NKT", "Tgd", "T cells"), invert = FALSE)
+new.label.levels2 <- c("B1", "B2", "Basophils", "CD8 T", "DC1", "DC2", "Eosinophils", "Granulocytes", "ILC", "Kupffer", "M1", "M2", "MDSC", "Microglia", "Monocytes", "Neutrophils", "NK", "NKT", "pDC", "pro-B cells", "Tgd", "Th1", "Th17", "Th2", "Treg", "M1-like")
+ICs.labeled@meta.data$scSorter.singleR.labels <- factor(x = ICs.labeled@meta.data$scSorter.singleR.labels, levels = new.label.levels2)
+
+Idents(ICs.labeled) <- ICs.labeled@meta.data$orig.ident
+
+ICs.Ctrl <- subset(ICs.labeled, idents = "Ctrl", invert = FALSE)
+ICs.PreT <- subset(ICs.labeled, idents = "Pre-T", invert = FALSE)
+ICs.PostT <- subset(ICs.labeled, idents = "Post-T", invert = FALSE)
+
+##merge non-immune and immune cells here to easily put into cellchat objects
+Ctrl.cells <- merge(ICs.Ctrl, y = nonIC.Ctrl)
+PreT.cells <- merge(ICs.PreT, y = nonIC.PreT)
+PostT.cells <- merge(ICs.PostT, y = nonIC.PostT)
+
+##adding new labels here to order cells from adaptive to innate immune cells, then non-immune cells
+##this will be performed again under this section of code to for SingleR annotated cell types of interest and separated with hash mark lines
+##first perform for SingleR annotated cells and subsets found
+all.cells <- merge(Ctrl.cells, y = c(PreT.cells, PostT.cells))
+Idents(all.cells) <- all.cells@meta.data$scSorter.singleR.labels
+all.B1 <- subset(all.cells, idents = "B1", invert = FALSE)
+all.B2 <- subset(all.cells, idents = "B2", invert = FALSE)
+all.proB <- subset(all.cells, idents = "pro-B cells", invert = FALSE)
+all.CD8 <- subset(all.cells, idents = "CD8 T", invert = FALSE)
+all.Th1 <- subset(all.cells, idents = "Th1", invert = FALSE)
+all.Th17 <- subset(all.cells, idents = "Th17", invert = FALSE)
+all.Th2 <- subset(all.cells, idents = "Th2", invert = FALSE)
+all.Treg <- subset(all.cells, idents = "Treg", invert = FALSE)
+all.NK <- subset(all.cells, idents = "NK", invert = FALSE)
+all.NKT <- subset(all.cells, idents = "NKT", invert = FALSE)
+all.Tgd <- subset(all.cells, idents = "Tgd", invert = FALSE)
+all.DC1 <- subset(all.cells, idents = "DC1", invert = FALSE)
+all.DC2 <- subset(all.cells, idents = "DC2", invert = FALSE)
+all.pDC <- subset(all.cells, idents = "pDC", invert = FALSE)
+all.MDSC <- subset(all.cells, idents = "MDSC", invert = FALSE)
+all.mono <- subset(all.cells, idents = "Monocytes", invert = FALSE)
+all.KC <- subset(all.cells, idents = "Kupffer", invert = FALSE)
+all.M1 <- subset(all.cells, idents = "M1", invert = FALSE)
+all.M1like <- subset(all.cells, idents = "M1-like", invert = FALSE)
+all.M2 <- subset(all.cells, idents = "M2", invert = FALSE)
+all.Microglia <- subset(all.cells, idents = "Microglia", invert = FALSE)
+all.Baso <- subset(all.cells, idents = "Basophils", invert = FALSE)
+all.Eosino <- subset(all.cells, idents = "Eosinophils", invert = FALSE)
+all.Granulo <- subset(all.cells, idents = "Granulocytes", invert = FALSE)
+all.Neutro <- subset(all.cells, idents = "Neutrophils", invert = FALSE)
+all.ILC <- subset(all.cells, idents = "ILC", invert = FALSE)
+all.Fibro <- subset(all.cells, idents = "Fibroblasts", invert = FALSE)
+all.Hep <- subset(all.cells, idents = "Hepatocytes", invert = FALSE)
+
+label.B1 <- "B1"
+label.B2 <- "B2"
+label.proB <- "pro-B cells"
+label.CD8 <- "CD8 T"
+label.Th1 <- "Th1"
+label.Th17 <- "Th17"
+label.Th2 <- "Th2"
+label.Treg <- "Treg"
+label.NK <- "NK"
+label.NKT <- "NKT"
+label.Tgd <- "Tgd"
+label.DC1 <- "DC1"
+label.DC2 <- "DC2"
+label.pDC <- "pDC"
+label.MDSC <- "MDSC"
+label.mono <- "Monocytes"
+label.KC <- "Kupffer"
+label.M1 <- "M1"
+label.M1like <- "M1-like"
+label.M2 <- "M2"
+label.microglia <- "Microglia"
+label.Baso <- "Basophils"
+label.Eosino <- "Eosinophils"
+label.Granulo <- "Granulocytes"
+label.Neutro <- "Neutrophils"
+label.ILC <- "ILC"
+label.fibro <- "Fibroblasts"
+label.hep <- "Hepatocytes"
+
+new.B1 <- AddMetaData(all.B1, metadata = label.B1, col.name = 'CellChat.ident')
+new.B2 <- AddMetaData(all.B2, metadata = label.B2, col.name = 'CellChat.ident')
+new.proB <- AddMetaData(all.proB, metadata = label.proB, col.name = 'CellChat.ident')
+new.CD8 <- AddMetaData(all.CD8, metadata = label.CD8, col.name = 'CellChat.ident')
+new.Th1 <- AddMetaData(all.Th1, metadata = label.Th1, col.name = 'CellChat.ident')
+new.Th17 <- AddMetaData(all.Th17, metadata = label.Th17, col.name = 'CellChat.ident')
+new.Th2 <- AddMetaData(all.Th2, metadata = label.Th2, col.name = 'CellChat.ident')
+new.Treg <- AddMetaData(all.Treg, metadata = label.Treg, col.name = 'CellChat.ident')
+new.NK <- AddMetaData(all.NK, metadata = label.NK, col.name = 'CellChat.ident')
+new.NKT <- AddMetaData(all.NKT, metadata = label.NKT, col.name = 'CellChat.ident')
+new.Tgd <- AddMetaData(all.Tgd, metadata = label.Tgd, col.name = 'CellChat.ident')
+new.DC1 <- AddMetaData(all.DC1, metadata = label.DC1, col.name = 'CellChat.ident')
+new.DC2 <- AddMetaData(all.DC2, metadata = label.DC2, col.name = 'CellChat.ident')
+new.pDC <- AddMetaData(all.pDC, metadata = label.pDC, col.name = 'CellChat.ident')
+new.MDSC <- AddMetaData(all.MDSC, metadata = label.MDSC, col.name = 'CellChat.ident')
+new.mono <- AddMetaData(all.mono, metadata = label.mono, col.name = 'CellChat.ident')
+new.KC <- AddMetaData(all.KC, metadata = label.KC, col.name = 'CellChat.ident')
+new.M1 <- AddMetaData(all.M1, metadata = label.M1, col.name = 'CellChat.ident')
+new.M1like <- AddMetaData(all.M1like, metadata = label.M1like, col.name = 'CellChat.ident')
+new.M2 <- AddMetaData(all.M2, metadata = label.M2, col.name = 'CellChat.ident')
+new.Microglia <- AddMetaData(all.Microglia, metadata = label.microglia, col.name = 'CellChat.ident')
+new.Baso <- AddMetaData(all.Baso, metadata = label.Baso, col.name = 'CellChat.ident')
+new.Eosino <- AddMetaData(all.Eosino, metadata = label.Eosino, col.name = 'CellChat.ident')
+new.Granulo <- AddMetaData(all.Granulo, metadata = label.Granulo, col.name = 'CellChat.ident')
+new.Neutro <- AddMetaData(all.Neutro, metadata = label.Neutro, col.name = 'CellChat.ident')
+new.ILC <- AddMetaData(all.ILC, metadata = label.ILC, col.name = 'CellChat.ident')
+new.Fibro <- AddMetaData(all.Fibro, metadata = label.fibro, col.name = 'CellChat.ident')
+new.Hep <- AddMetaData(all.Hep, metadata = label.hep, col.name = 'CellChat.ident')
+
+new.all.cells <- merge(new.B1, y = c(new.B2, new.proB, new.CD8, new.Th1, new.Th17, new.Th2, new.Treg, new.NK, new.NKT, new.Tgd, new.DC1, new.DC2, new.pDC, new.MDSC, new.mono, new.KC, new.M1, new.M2, new.M1like, new.Microglia, new.Baso, new.Eosino, new.Granulo, new.Neutro, new.ILC, new.Fibro, new.Hep))
+Idents(new.all.cells) <- new.all.cells@meta.data$orig.ident 
+Ctrl.new <- subset(new.all.cells, idents = "Ctrl", invert = FALSE)
+PreT.new <- subset(new.all.cells, idents = "Pre-T", invert = FALSE)
+PostT.new <- subset(new.all.cells, idents = "Post-T", invert = FALSE)
+
+new.label.levels3 <- c("B1", "B2", "pro-B cells", "CD8 T", "Th1", "Th17", "Th2", "Treg", "NK", "NKT", "Tgd", "DC1", "DC2", "pDC", "MDSC", "Monocytes", "Kupffer", "M1", "M1-like", "M2", "Microglia", "Basophils", "Eosinophils", "Granulocytes", "Neutrophils", "ILC", "Fibroblasts", "Hepatocytes")
+Ctrl.cells@meta.data$scSorter.singleR.labels <- factor(x = Ctrl.cells@meta.data$scSorter.singleR.labels, levels = new.label.levels3)
+PreT.cells@meta.data$scSorter.singleR.labels <- factor(x = PreT.cells@meta.data$scSorter.singleR.labels, levels = new.label.levels3)
+PostT.cells@meta.data$scSorter.singleR.labels <- factor(x = PostT.cells@meta.data$scSorter.singleR.labels, levels = new.label.levels3)
+
+cellchat.Ctrl <- createCellChat(object = Ctrl.cells, group.by = "scSorter.singleR.labels", assay = "RNA")
+cellchat.PreT <- createCellChat(object = PreT.cells, group.by = "scSorter.singleR.labels", assay = "RNA")
+cellchat.PostT <- createCellChat(object = PostT.cells, group.by = "scSorter.singleR.labels", assay = "RNA")
+
+##these are for initial analysis with immune cells only
+#cellchat.Ctrl <- createCellChat(object = ICs.Ctrl, group.by = "scSorter.singleR.labels", assay = "RNA")
+#cellchat.PreT <- createCellChat(object = ICs.PreT, group.by = "scSorter.singleR.labels", assay = "RNA")
+#cellchat.PostT <- createCellChat(object = ICs.PostT, group.by = "scSorter.singleR.labels", assay = "RNA")
+
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+##performing here for SingleR annotated cell types only (Note: this would technically need to be a separate analysis compared to previous section, as results are grouped by these labels!)
+all.cells <- merge(Ctrl.cells, y = c(PreT.cells, PostT.cells))
+Idents(all.cells) <- all.cells@meta.data$singleR.labels
+all.B <- subset(all.cells, idents = "B cells", invert = FALSE)
+all.proB <- subset(all.cells, idents = "B cells, pro", invert = FALSE)
+all.T <- subset(all.cells, idents = "T cells", invert = FALSE)
+all.NK <- subset(all.cells, idents = "NK cells", invert = FALSE)
+all.NKT <- subset(all.cells, idents = "NKT", invert = FALSE)
+all.Tgd <- subset(all.cells, idents = "Tgd", invert = FALSE)
+all.DC <- subset(all.cells, idents = "DC", invert = FALSE)
+all.mono <- subset(all.cells, idents = "Monocytes", invert = FALSE)
+all.MP <- subset(all.cells, idents = "Macrophages", invert = FALSE)
+all.Microglia <- subset(all.cells, idents = "Microglia", invert = FALSE)
+all.Baso <- subset(all.cells, idents = "Basophils", invert = FALSE)
+all.Eosino <- subset(all.cells, idents = "Eosinophils", invert = FALSE)
+all.Granulo <- subset(all.cells, idents = "Granulocytes", invert = FALSE)
+all.Neutro <- subset(all.cells, idents = "Neutrophils", invert = FALSE)
+all.ILC <- subset(all.cells, idents = "ILC", invert = FALSE)
+all.Fibro <- subset(all.cells, idents = "Fibroblasts", invert = FALSE)
+all.Hep <- subset(all.cells, idents = "Hepatocytes", invert = FALSE)
+
+label.B <- "B cells"
+label.proB <- "pro-B cells"
+label.T <- "T cells"
+label.NK <- "NK"
+label.NKT <- "NKT"
+label.Tgd <- "Tgd"
+label.DC <- "DC"
+label.mono <- "Monocytes"
+label.MP <- "Macrophages"
+label.microglia <- "Microglia"
+label.Baso <- "Basophils"
+label.Eosino <- "Eosinophils"
+label.Granulo <- "Granulocytes"
+label.Neutro <- "Neutrophils"
+label.ILC <- "ILC"
+label.fibro <- "Fibroblasts"
+label.hep <- "Hepatocytes"
+
+new.B <- AddMetaData(all.B, metadata = label.B, col.name = 'CellChat.ident')
+new.proB <- AddMetaData(all.proB, metadata = label.proB, col.name = 'CellChat.ident')
+new.T <- AddMetaData(all.T, metadata = label.T, col.name = 'CellChat.ident')
+new.NK <- AddMetaData(all.NK, metadata = label.NK, col.name = 'CellChat.ident')
+new.NKT <- AddMetaData(all.NKT, metadata = label.NKT, col.name = 'CellChat.ident')
+new.Tgd <- AddMetaData(all.Tgd, metadata = label.Tgd, col.name = 'CellChat.ident')
+new.DC <- AddMetaData(all.DC, metadata = label.DC, col.name = 'CellChat.ident')
+new.mono <- AddMetaData(all.mono, metadata = label.mono, col.name = 'CellChat.ident')
+new.MP <- AddMetaData(all.MP, metadata = label.MP, col.name = 'CellChat.ident')
+new.Microglia <- AddMetaData(all.Microglia, metadata = label.microglia, col.name = 'CellChat.ident')
+new.Baso <- AddMetaData(all.Baso, metadata = label.Baso, col.name = 'CellChat.ident')
+new.Eosino <- AddMetaData(all.Eosino, metadata = label.Eosino, col.name = 'CellChat.ident')
+new.Granulo <- AddMetaData(all.Granulo, metadata = label.Granulo, col.name = 'CellChat.ident')
+new.Neutro <- AddMetaData(all.Neutro, metadata = label.Neutro, col.name = 'CellChat.ident')
+new.ILC <- AddMetaData(all.ILC, metadata = label.ILC, col.name = 'CellChat.ident')
+new.Fibro <- AddMetaData(all.Fibro, metadata = label.fibro, col.name = 'CellChat.ident')
+new.Hep <- AddMetaData(all.Hep, metadata = label.hep, col.name = 'CellChat.ident')
+
+new.all.cells <- merge(new.B, y = c(new.proB, new.T, new.NK, new.NKT, new.Tgd, new.DC, new.mono, new.MP, new.Microglia, new.Baso, new.Eosino, new.Granulo, new.Neutro, new.ILC, new.Fibro, new.Hep))
+Idents(new.all.cells) <- new.all.cells@meta.data$orig.ident 
+Ctrl.new <- subset(new.all.cells, idents = "Ctrl", invert = FALSE)
+PreT.new <- subset(new.all.cells, idents = "Pre-T", invert = FALSE)
+PostT.new <- subset(new.all.cells, idents = "Post-T", invert = FALSE)
+
+new.label.levels4 <- c("B cells", "pro-B cells", "T cells", "NK", "NKT", "Tgd", "DC", "Monocytes", "Macrophages", "Microglia", "Basophils", "Eosinophils", "Granulocytes", "Neutrophils", "ILC", "Fibroblasts", "Hepatocytes")
+Ctrl.new@meta.data$CellChat.ident <- factor(x = Ctrl.new@meta.data$CellChat.ident, levels = new.label.levels4)
+PreT.new@meta.data$CellChat.ident <- factor(x = PreT.new@meta.data$CellChat.ident, levels = new.label.levels4)
+PostT.new@meta.data$CellChat.ident <- factor(x = PostT.new@meta.data$CellChat.ident, levels = new.label.levels4)
+
+cellchat.Ctrl <- createCellChat(object = Ctrl.new, group.by = "CellChat.ident", assay = "RNA")
+cellchat.PreT <- createCellChat(object = PreT.new, group.by = "CellChat.ident", assay = "RNA")
+cellchat.PostT <- createCellChat(object = PostT.new, group.by = "CellChat.ident", assay = "RNA")
+##now just load in the same databases and all downstream steps should function the same, but with new group ordering
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+CellChatDB <- CellChatDB.mouse
+showDatabaseCategory(CellChatDB)
+
+dplyr::glimpse(CellChatDB$interaction)
+
+CellChatDB.use <- subsetDB(CellChatDB, search = c("Secreted Signaling", "Cell-Cell Adhesion", "ECM-Receptor"))
+
+cellchat.Ctrl@DB <- CellChatDB.use
+cellchat.PreT@DB <- CellChatDB.use
+cellchat.PostT@DB <- CellChatDB.use
+
+##start with Ctrl
+###############################################################################################################################################################################
+###############################################################################################################################################################################
+cellchat.Ctrl <- subsetData(cellchat.Ctrl)
+future::plan("multiprocess", workers = 2) 
+
+cellchat.Ctrl <- identifyOverExpressedGenes(cellchat.Ctrl)
+cellchat.Ctrl <- identifyOverExpressedInteractions(cellchat.Ctrl)
+
+unique(cellchat.Ctrl@idents)
+
+cellchat.Ctrl@idents = droplevels(cellchat.Ctrl@idents, exclude = setdiff(levels(cellchat.Ctrl@idents),unique(cellchat.Ctrl@idents)))
+
+cellchat.Ctrl <- computeCommunProb(cellchat.Ctrl)
+
+cellchat.Ctrl <- filterCommunication(cellchat.Ctrl, min.cells = 10)
+
+cellchat.Ctrl <- computeCommunProbPathway(cellchat.Ctrl)
+
+cellchat.Ctrl <- aggregateNet(cellchat.Ctrl)
+
+groupSize <- as.numeric(table(cellchat.Ctrl@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+
+netVisual_circle(cellchat.Ctrl@net$count, vertex.weight = groupSize, weight.scale = T, label.edge = F, title.name = "Number of Interactions")
+
+netVisual_circle(cellchat.Ctrl@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge = F, title.name = "Interaction weights/strength")
+
+##visualize all pathways specific to Ctrl cell groups
+cellchat.Ctrl@netP$pathways
+pathways.show <- cellchat.Ctrl@netP$pathways
+
+##investigate directionality of signaling between cell types
+netVisual_aggregate(cellchat.Ctrl, signaling = "GALECTIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "GALECTIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "TGFb", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "TGFb", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "PARs", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "PARs", font.size = 16, font.size.title = 16) + theme(text = element_text(size = 16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "IGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "IGF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "CCL", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "CCL", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "PROS", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "PROS", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "COMPLEMENT", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "COMPLEMENT", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "HGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netVisual_aggregate(cellchat.Ctrl, signaling = "IL1", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "IL1", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+#netVisual_aggregate(cellchat.Ctrl, signaling = "KIT", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netVisual_aggregate(cellchat.Ctrl, signaling = "LAMININ", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "LAMININ", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "VTN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "VTN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "FN1", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "FN1", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "SEMA3", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "SEMA3", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+#netVisual_aggregate(cellchat.Ctrl, signaling = "NRG", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+#netAnalysis_contribution(cellchat.Ctrl, signaling = "NRG", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "TENASCIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "TENASCIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "BMP", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "BMP", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "FLT3", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "FLT3", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "THBS", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "THBS", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+#netVisual_aggregate(cellchat.Ctrl, signaling = "KIT", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+#netAnalysis_contribution(cellchat.Ctrl, signaling = "KIT", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "COLLAGEN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "COLLAGEN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "PDGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "PDGF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "ANGPTL", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "ANGPTL", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "VEGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "VEGF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "AGT", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "AGT", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.Ctrl, signaling = "VISFATIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.Ctrl, signaling = "VISFATIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+
+##Next section is for systems analysis of cell to cell communication networks and identifying signaling roles (primary senders/receivers of signals)
+#NOTE: netP means the inferred intercellular communication network of signaling pathways
+
+cellchat.Ctrl <- netAnalysis_computeCentrality(cellchat.Ctrl, slot.name = "netP")
+netAnalysis_signalingRole_network(cellchat.Ctrl, signaling = pathways.show, width = 12, height = 5, font.size = 10)
+
+##identify signals contributing most to outgoing or incoming from specific cell groups
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat.Ctrl, signaling = pathways.show, pattern = "outgoing", width = 9, height = 6, font.size = 8, font.size.title = 9)
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat.Ctrl, signaling = pathways.show, pattern = "incoming", width = 9, height = 6, font.size = 8, font.size.title = 9)
+ht1 + ht2
+
+##Use this to look at river plots of patterns for signaling
+##require NMF and galluvial libraries to be loaded in
+selectK(cellchat.Ctrl, pattern = "outgoing")
+
+nPatterns = 4
+cellchat.Ctrl <- identifyCommunicationPatterns(cellchat.Ctrl, pattern = "outgoing", k = nPatterns)
+cellchat.Ctrl <- identifyCommunicationPatterns(cellchat.Ctrl, pattern = "incoming", k = nPatterns)
+
+netAnalysis_river(cellchat.Ctrl, pattern = "outgoing")
+netAnalysis_river(cellchat.Ctrl, pattern = "incoming")
+
+netAnalysis_dot(cellchat.Ctrl, pattern = "outgoing")
+netAnalysis_dot(cellchat.Ctrl, pattern = "incoming")
+
+##find signaling groups based on functional similarity
+cellchat.Ctrl <- computeNetSimilarity(cellchat.Ctrl, type = "functional")
+cellchat.Ctrl <- netEmbedding(cellchat.Ctrl, type = "functional")
+
+cellchat.Ctrl <- netClustering(cellchat.Ctrl, type = "functional")
+
+netVisual_embedding(cellchat.Ctrl, type = "functional", label.size = 3.5)
+
+##end of Ctrl, now do for Pre-T
+###############################################################################################################################################################################
+###############################################################################################################################################################################
+cellchat.PreT <- subsetData(cellchat.PreT)
+future::plan("multiprocess", workers = 2) 
+
+cellchat.PreT <- identifyOverExpressedGenes(cellchat.PreT)
+cellchat.PreT <- identifyOverExpressedInteractions(cellchat.PreT)
+
+unique(cellchat.PreT@idents)
+
+cellchat.PreT@idents = droplevels(cellchat.PreT@idents, exclude = setdiff(levels(cellchat.PreT@idents),unique(cellchat.PreT@idents)))
+
+cellchat.PreT <- computeCommunProb(cellchat.PreT)
+
+cellchat.PreT <- filterCommunication(cellchat.PreT, min.cells = 10)
+
+cellchat.PreT <- computeCommunProbPathway(cellchat.PreT)
+
+cellchat.PreT <- aggregateNet(cellchat.PreT)
+
+groupSize <- as.numeric(table(cellchat.PreT@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+
+netVisual_circle(cellchat.PreT@net$count, vertex.weight = groupSize, weight.scale = T, label.edge = F, title.name = "Number of Interactions")
+
+netVisual_circle(cellchat.PreT@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge = F, title.name = "Interaction weights/strength")
+
+##visualize all pathways specific to Pre-T cell groups
+cellchat.PreT@netP$pathways
+pathways.show <- cellchat.PreT@netP$pathways
+
+##investigate directionality of signaling between cell types
+netVisual_aggregate(cellchat.PreT, signaling = "GALECTIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "GALECTIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "TGFb", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "TGFb", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "IGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "IGF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "CCL", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "CCL", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+#netVisual_aggregate(cellchat.PreT, signaling = "CXCL", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+#netAnalysis_contribution(cellchat.PreT, signaling = "CXCL", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "IL1", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "IL1", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "PARs", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "PARs", font.size = 16, font.size.title = 16) +theme(text = element_text(size=16))
+#netVisual_aggregate(cellchat.PreT, signaling = "TNF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+#netAnalysis_contribution(cellchat.PreT, signaling = "TNF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "HGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "HGF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "COMPLEMENT", layout = "chord", vertex.label.cex = 1.25, small.gap = TRUE, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "COMPLEMENT", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "VEGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "VEGF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "LAMININ", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "LAMININ", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "VTN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "VTN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "FN1", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "FN1", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "COLLAGEN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "COLLAGEN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "CHEMERIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "CHEMERIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "HSPG", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "HSPG", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "SEMA3", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "SEMA3", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "PROS", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "PROS", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+#netVisual_aggregate(cellchat.PreT, signaling = "NRG", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+#netAnalysis_contribution(cellchat.PreT, signaling = "NRG", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "TENASCIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "TENASCIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "BMP", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "BMP", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "GRN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "GRN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "PERIOSTIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "PERIOSTIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "ANNEXIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "ANNEXIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "CSF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "CSF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "VISFATIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "VISFATIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "ANGPTL", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "ANGPTL", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PreT, signaling = "PDGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PreT, signaling = "PDGF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+
+##Next section is for systems analysis of cell to cell communication networks and identifying signaling roles (primary senders/receivers of signals)
+#NOTE: netP means the inferred intercellular communication network of signaling pathways
+
+cellchat.PreT <- netAnalysis_computeCentrality(cellchat.PreT, slot.name = "netP")
+netAnalysis_signalingRole_network(cellchat.PreT, signaling = pathways.show, width = 12, height = 5, font.size = 10)
+
+##identify signals contributing most to outgoing or incoming from specific cell groups
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat.PreT, signaling = pathways.show, pattern = "outgoing", width = 9, height = 7, font.size = 8, font.size.title = 9)
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat.PreT, signaling = pathways.show, pattern = "incoming", width = 9, height = 7, font.size = 8, font.size.title = 9)
+ht1 + ht2
+
+##Use this to look at river plots of patterns for signaling
+##require NMF and galluvial libraries to be loaded in
+selectK(cellchat.PreT, pattern = "outgoing")
+
+nPatterns = 4
+cellchat.PreT <- identifyCommunicationPatterns(cellchat.PreT, pattern = "outgoing", k = nPatterns)
+cellchat.PreT <- identifyCommunicationPatterns(cellchat.PreT, pattern = "incoming", k = nPatterns)
+
+netAnalysis_river(cellchat.PreT, pattern = "outgoing")
+netAnalysis_river(cellchat.PreT, pattern = "incoming")
+
+netAnalysis_dot(cellchat.PreT, pattern = "outgoing")
+netAnalysis_dot(cellchat.PreT, pattern = "incoming")
+
+##find signaling groups based on functional similarity
+cellchat.PreT <- computeNetSimilarity(cellchat.PreT, type = "functional")
+cellchat.PreT <- netEmbedding(cellchat.PreT, type = "functional")
+
+cellchat.PreT <- netClustering(cellchat.PreT, type = "functional")
+
+netVisual_embedding(cellchat.PreT, type = "functional", label.size = 3.5)
+
+##end of Pre-T, now do for Post-T
+###############################################################################################################################################################################
+###############################################################################################################################################################################
+cellchat.PostT <- subsetData(cellchat.PostT)
+future::plan("multiprocess", workers = 2) 
+
+cellchat.PostT <- identifyOverExpressedGenes(cellchat.PostT)
+cellchat.PostT <- identifyOverExpressedInteractions(cellchat.PostT)
+
+unique(cellchat.PostT@idents)
+
+cellchat.PostT@idents = droplevels(cellchat.PostT@idents, exclude = setdiff(levels(cellchat.PostT@idents),unique(cellchat.PostT@idents)))
+
+cellchat.PostT <- computeCommunProb(cellchat.PostT)
+
+cellchat.PostT <- filterCommunication(cellchat.PostT, min.cells = 10)
+
+cellchat.PostT <- computeCommunProbPathway(cellchat.PostT)
+
+cellchat.PostT <- aggregateNet(cellchat.PostT)
+
+groupSize <- as.numeric(table(cellchat.PostT@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+
+netVisual_circle(cellchat.PostT@net$count, vertex.weight = groupSize, weight.scale = T, label.edge = F, title.name = "Number of Interactions")
+
+netVisual_circle(cellchat.PostT@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge = F, title.name = "Interaction weights/strength")
+
+##visualize all pathways specific to Post-T cell groups
+cellchat.PostT@netP$pathways
+pathways.show <- cellchat.PostT@netP$pathways
+
+##investigate directionality of signaling between cell types
+netVisual_aggregate(cellchat.PostT, signaling = "GALECTIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "GALECTIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "TGFb", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "TGFb", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "PROS", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "PROS", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "CCL", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "CCL", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "IL1", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "IL1", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+#netVisual_aggregate(cellchat.PostT, signaling = "IGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+#netAnalysis_contribution(cellchat.PostT, signaling = "IGF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "COMPLEMENT", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "COMPLEMENT", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "LAMININ", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "LAMININ", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "VTN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "VTN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+#netVisual_aggregate(cellchat.PostT, signaling = "CHEMERIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+#netAnalysis_contribution(cellchat.PostT, signaling = "CHEMERIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "HSPG", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "HSPG", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "SEMA3", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "SEMA3", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "PARs", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "PARs", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "TENASCIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "TENASCIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "BMP", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "BMP", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "GRN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "GRN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "AGT", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "AGT", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "FN1", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "FN1", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "COLLAGEN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "COLLAGEN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "CSF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "CSF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "PDGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "PDGF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "VISFATIN", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "VISFATIN", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "ANGPTL", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "ANGPTL", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+netVisual_aggregate(cellchat.PostT, signaling = "HGF", layout = "chord", vertex.label.cex = 1.25, remove.isolate = TRUE)
+netAnalysis_contribution(cellchat.PostT, signaling = "HGF", font.size = 16, font.size.title = 16) + theme(text = element_text(size=16))
+
+##Next section is for systems analysis of cell to cell communication networks and identifying signaling roles (primary senders/receivers of signals)
+#NOTE: netP means the inferred intercellular communication network of signaling pathways
+
+cellchat.PostT <- netAnalysis_computeCentrality(cellchat.PostT, slot.name = "netP")
+netAnalysis_signalingRole_network(cellchat.PostT, signaling = c("COMPLEMENT", "TGFb", "GALECTIN", "PARs", "VISFATIN", "PROS", "CCL", "GRN", "IL1", "IGF"), width = 12, height = 5, font.size = 10)
+
+##identify signals contributing most to outgoing or incoming from specific cell groups
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat.PostT, signaling = pathways.show, pattern = "outgoing", width = 9, height = 6, font.size = 8, font.size.title = 9)
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat.PostT, signaling = pathways.show, pattern = "incoming", width = 9, height = 6, font.size = 8, font.size.title = 9)
+ht1 + ht2
+
+##Use this to look at river plots of patterns for signaling
+##require NMF and galluvial libraries to be loaded in
+selectK(cellchat.PostT, pattern = "outgoing")
+
+nPatterns = 4
+cellchat.PostT <- identifyCommunicationPatterns(cellchat.PostT, pattern = "outgoing", k = nPatterns)
+cellchat.PostT <- identifyCommunicationPatterns(cellchat.PostT, pattern = "incoming", k = nPatterns)
+
+netAnalysis_river(cellchat.PostT, pattern = "outgoing")
+netAnalysis_river(cellchat.PostT, pattern = "incoming")
+
+netAnalysis_dot(cellchat.PostT, pattern = "outgoing")
+netAnalysis_dot(cellchat.PostT, pattern = "incoming")
+
+##find signaling groups based on functional similarity
+cellchat.PostT <- computeNetSimilarity(cellchat.PostT, type = "functional")
+cellchat.PostT <- netEmbedding(cellchat.PostT, type = "functional")
+
+cellchat.PostT <- netClustering(cellchat.PostT, type = "functional")
+
+netVisual_embedding(cellchat.PostT, type = "functional", label.size = 3.5)
+###############################################################################################################################################################################
+###############################################################################################################################################################################
+###############################################################################################################################################################################
+##export these files to access all predicted specific ligand and receptor pairs and the cell types expressing them as senders/receivers of signals
+Ctrl.df.net <- subsetCommunication(cellchat.Ctrl, slot.name = "net")
+PreT.df.net <- subsetCommunication(cellchat.PreT, slot.name = "net")
+PostT.df.net <- subsetCommunication(cellchat.PostT, slot.name = "net")
+
+write.csv(Ctrl.df.net, file = "D:/Singulomics Data/Graph and Figure Export/Finalizing Clusters and Patterns PWPT Images/FinalR Script and XCEL/CellChat/IC.Hep.Fibro.net/Ctrl.SingleR.anno.df.net.csv")
+write.csv(PreT.df.net, file = "D:/Singulomics Data/Graph and Figure Export/Finalizing Clusters and Patterns PWPT Images/FinalR Script and XCEL/CellChat/IC.Hep.Fibro.net/PreT.SingleR.anno.df.net.csv")
+write.csv(PostT.df.net, file = "D:/Singulomics Data/Graph and Figure Export/Finalizing Clusters and Patterns PWPT Images/FinalR Script and XCEL/CellChat/IC.Hep.Fibro.net/PostT.SingleR.anno.df.net.csv")
+##FIN
