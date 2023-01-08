@@ -1,5 +1,5 @@
 # Hepatic-Immune-Cell-Patterns-Code
-The script in this repository holds a sequential workflow of 6 steps.
+**The script in this repository holds a sequential workflow of 6 steps.**
 
 1. SingleR reference database annotations, marker assessment of annotated cell types, and initial visualization
 2. Use of reference database annotated cell type markers, marker gene-based principal component analysis (PCA), and quality control and filtering
@@ -10,7 +10,7 @@ The script in this repository holds a sequential workflow of 6 steps.
 
 Each set of steps do not need to be performed in this exact order, but the first three steps are critical to understand and manipulate known cell types in subsequent steps
 
-Required Software: R or Rstudio 
+**Required Software: R or Rstudio **
 
 Steps 1-4 use scran, scater, Seurat, scSorter, ggplot2, patchwork, dplyr, tidyr, ggrepel, SingleR, celldex, scuttle, pheatmap, and viridis libraries
 
@@ -18,7 +18,7 @@ Step 5 uses ggplot2, Seurat, rhapsodykit, scuttle, tidyverse, and DESeq2 librari
 
 Step 6 uses Seurat, patchwork, and CellChat libraries (along with NMF and ggalluvial if desired for additional pattern analyses)
 
-Notes about script structure:
+**Notes about script structure:**
 
 All required packages/libraries are included in the script, with all at the top used for steps 1 to 4, whereas steps 5 and 6 have the required packages before they start; only packages involving heatmap generation and coloration for heatmaps are interspersed throughout where needed
 
@@ -28,7 +28,7 @@ A double hash indicates a specific note in the script providing insight or ratio
 
 A single hash or a single hash followed by an exclamation point are pieces of code that can have the hash removed to perform functions a different way, with another object, etc.
 
-Purpose of Steps:
+**Purpose of Steps:**
 
 Step 1 enables access to SingleR reference databases to annotate all of our cells and visualize them; along with testing for markers of the annotated cells to use in PCA later to give a more optimized visualization
 
