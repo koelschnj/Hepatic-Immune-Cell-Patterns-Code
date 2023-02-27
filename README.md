@@ -41,3 +41,7 @@ Step 4 sorts known subsets with the scSorter algorithm coupled to a list of manu
 Step 5 performs a functional assessment of specific cell populations by using either Seurat functions or performing DESeq2 on specific cell types of interest to compare the results in IPA
 
 Step 6 employs CellChat, which uses a manually curated database of known ligand-receptor (L-R) interactions to infer cell types that may be sending or receiving signals based on their gene expression of the L-R pairs
+
+**Marker Genes Table Information**
+The SingleR Annotated Cell Markers excel file contains marker genes of each annotated cell type and all of the ones used for PCA in the column titled "Genes for PCA"
+The IC Patterns scSorter genes and PMIDs excel file contains marker genes used in scSorter to identify subsets of cells, along with any meaningful references for the use of specific markers; "GeneList# for R" column shows all of the ones used together during one run to sort subsets out of the annotated cell populations. 
