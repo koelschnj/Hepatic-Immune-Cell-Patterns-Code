@@ -45,4 +45,5 @@ Step 6 employs CellChat, which uses a manually curated database of known ligand-
 **Marker Genes Table Information**
 
 The SingleR Annotated Cell Markers excel file contains marker genes of each annotated cell type and all of the ones used for PCA in the column titled "Genes for PCA"
+
 The IC Patterns scSorter genes and PMIDs excel file contains marker genes used in scSorter to identify subsets of cells, along with any meaningful references for the use of specific markers; "GeneList# for R" column shows all of the ones used together during one run to sort subsets out of the annotated cell populations. 
