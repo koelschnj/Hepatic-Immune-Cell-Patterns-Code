@@ -47,3 +47,5 @@ Step 6 employs CellChat, which uses a manually curated database of known ligand-
 The SingleR Annotated Cell Markers excel file contains marker genes of each annotated cell type and all of the ones used for PCA in the column titled "Genes for PCA"
 
 The IC Patterns scSorter genes and PMIDs excel file contains marker genes used in scSorter to identify subsets of cells, along with any meaningful references for the use of specific markers; "GeneList# for R" column shows all of the ones used together during one run to sort subsets out of the annotated cell populations. 
+
+These code were used for the following publication: Koelsch, N., Mirshahi, F., Aqbi, H. F., Saneshaw, M., Idowu, M. O., Olex, A. L., Sanyal, A. J., & Manjili, M. H. (2023). The crosstalking immune cells network creates a collective function beyond the function of each cellular constituent during the progression of hepatocellular carcinoma. Scientific reports, 13(1), 12630. https://doi.org/10.1038/s41598-023-39020-w
